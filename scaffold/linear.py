@@ -16,6 +16,7 @@ STATE_IDS = {
     "In Progress": "a9938f4d-99c0-4619-b894-e4df378ae901",
     "In Review": "ce1c1340-d5a5-4a0e-b519-0b0a47cf119d",
     "Done": "41170148-524f-46b8-b65e-eb8e6d5bb969",
+    "Canceled": "fef63550-b7df-40d3-9110-09723bfffc18",
 }
 
 # Default IDs

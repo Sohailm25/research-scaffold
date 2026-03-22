@@ -273,6 +273,60 @@ def experiments():
         click.echo(f"{title:<40} {state:<15} {updated:<12}")
 
 
+@main.command("cleanup-experiments")
+@click.option(
+    "--cancel-state", default=None,
+    help="Cancel all issues currently in this state (e.g. 'Todo')",
+)
+def cleanup_experiments(cancel_state):
+    """List experiments by state and optionally cancel junk issues."""
+    from scaffold.linear import LinearClient
+
+    client = LinearClient()
+    issues = client.list_experiments()
+
+    if not issues:
+        click.echo("No experiments found.")
+        return
+
+    # Group by state
+    from collections import Counter
+    state_counts = Counter(i["state"] for i in issues)
+
+    click.echo("Experiments by state:")
+    for state, count in state_counts.most_common():
+        click.echo(f"  {state}: {count}")
+    click.echo(f"  Total: {len(issues)}")
+
+    if cancel_state is None:
+        # List mode: show all issues
+        click.echo()
+        for state in sorted(state_counts):
+            click.echo(f"\n[{state}]")
+            for i in issues:
+                if i["state"] == state:
+                    click.echo(f"  {i['title']}")
+        return
+
+    # Cancel mode
+    to_cancel = [i for i in issues if i["state"] == cancel_state]
+    if not to_cancel:
+        click.echo(f"\nNo issues in '{cancel_state}' state.")
+        return
+
+    click.echo(f"\nWill cancel {len(to_cancel)} issues in '{cancel_state}':")
+    for i in to_cancel:
+        click.echo(f"  {i['title']}")
+
+    if not click.confirm(f"\nCancel these {len(to_cancel)} issues?"):
+        click.echo("Aborted.")
+        return
+
+    for i in to_cancel:
+        client.update_experiment_status(i["id"], "Canceled")
+    click.echo(f"Canceled {len(to_cancel)} issues.")
+
+
 def _print_phase_result(result):
     """Print a PhaseResult to the terminal."""
     status = "PASS" if result.gate_passed else "FAIL"

@@ -741,6 +741,20 @@ class TestErrorHandling:
         with pytest.raises(LinearAPIError):
             client.create_experiment_issue("Title", "Desc")
 
+    def test_canceled_state_in_state_ids(self):
+        """Canceled state is available for archiving junk issues."""
+        assert "Canceled" in STATE_IDS
+        assert STATE_IDS["Canceled"]  # non-empty string
+
+    def test_update_to_canceled_state(self):
+        """Can transition an issue to Canceled state."""
+        canned = {"data": {"issueUpdate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+        client.update_experiment_status("issue-junk", "Canceled")
+
+        body = json.loads(transport.requests[0].content)
+        assert body["variables"]["input"]["stateId"] == STATE_IDS["Canceled"]
+
     def test_content_type_header_is_json(self):
         canned = {
             "data": {

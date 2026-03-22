@@ -159,3 +159,79 @@ class TestApproveCommand:
         # Phase is NOT_STARTED, not HUMAN_REVIEW, should error
         assert result.exit_code != 0
         assert "NOT_STARTED" in result.output or "not HUMAN_REVIEW" in result.output
+
+
+# --- cleanup-experiments ---
+
+
+class TestCleanupExperiments:
+    def test_dry_run_lists_issues_by_state(self, monkeypatch):
+        """Default mode (no --cancel-state) lists issues grouped by state."""
+        fake_issues = [
+            {"id": "id-1", "title": "test-experiment", "state": "Todo",
+             "description": "", "created_at": "", "updated_at": ""},
+            {"id": "id-2", "title": "real-experiment", "state": "In Progress",
+             "description": "", "created_at": "", "updated_at": ""},
+            {"id": "id-3", "title": "path-test", "state": "Todo",
+             "description": "", "created_at": "", "updated_at": ""},
+        ]
+        monkeypatch.setattr(
+            "scaffold.linear.LinearClient",
+            lambda: type("MockClient", (), {"list_experiments": lambda self: fake_issues})(),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["cleanup-experiments"])
+        assert result.exit_code == 0
+        assert "Todo: 2" in result.output
+        assert "In Progress: 1" in result.output
+        assert "test-experiment" in result.output
+
+    def test_cancel_state_cancels_matching_issues(self, monkeypatch):
+        """--cancel-state Todo cancels all Todo issues."""
+        fake_issues = [
+            {"id": "id-1", "title": "test-experiment", "state": "Todo",
+             "description": "", "created_at": "", "updated_at": ""},
+            {"id": "id-2", "title": "real-experiment", "state": "In Progress",
+             "description": "", "created_at": "", "updated_at": ""},
+            {"id": "id-3", "title": "path-test", "state": "Todo",
+             "description": "", "created_at": "", "updated_at": ""},
+        ]
+        canceled_ids = []
+
+        class MockClient:
+            def list_experiments(self):
+                return fake_issues
+            def update_experiment_status(self, issue_id, state):
+                canceled_ids.append((issue_id, state))
+
+        monkeypatch.setattr("scaffold.linear.LinearClient", lambda: MockClient())
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["cleanup-experiments", "--cancel-state", "Todo"], input="y\n")
+        assert result.exit_code == 0
+        assert len(canceled_ids) == 2
+        assert all(state == "Canceled" for _, state in canceled_ids)
+        assert {id for id, _ in canceled_ids} == {"id-1", "id-3"}
+
+    def test_cancel_state_aborts_on_no(self, monkeypatch):
+        """User declining cancellation does not cancel anything."""
+        fake_issues = [
+            {"id": "id-1", "title": "test-experiment", "state": "Todo",
+             "description": "", "created_at": "", "updated_at": ""},
+        ]
+        canceled_ids = []
+
+        class MockClient:
+            def list_experiments(self):
+                return fake_issues
+            def update_experiment_status(self, issue_id, state):
+                canceled_ids.append(issue_id)
+
+        monkeypatch.setattr("scaffold.linear.LinearClient", lambda: MockClient())
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["cleanup-experiments", "--cancel-state", "Todo"], input="n\n")
+        assert result.exit_code == 0
+        assert len(canceled_ids) == 0
+        assert "Aborted" in result.output
