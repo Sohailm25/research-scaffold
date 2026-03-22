@@ -371,3 +371,71 @@ class TestClaudeCodeBackendDefaultTimeout:
         backend.run("prompt", cwd=tmp_path, timeout=600)
 
         assert captured_kwargs["timeout"] == 600
+
+
+class TestClaudeCodeBackendOAuthFallback:
+    """Tests for G32: ClaudeCodeBackend strips ANTHROPIC_API_KEY so OAuth is used."""
+
+    def test_strips_anthropic_api_key_from_env(self, tmp_path, monkeypatch):
+        """Subprocess env should not contain ANTHROPIC_API_KEY even if parent has it."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key-12345")
+
+        captured_kwargs = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        backend = ClaudeCodeBackend()
+        backend.run("test prompt", cwd=tmp_path)
+
+        env = captured_kwargs.get("env")
+        assert env is not None, "subprocess should get explicit env"
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_preserves_other_env_vars(self, tmp_path, monkeypatch):
+        """Non-API-key env vars should still be present in subprocess env."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-fake-key")
+        monkeypatch.setenv("HOME", "/Users/test")
+        monkeypatch.setenv("MY_CUSTOM_VAR", "hello")
+
+        captured_kwargs = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        backend = ClaudeCodeBackend()
+        backend.run("test prompt", cwd=tmp_path)
+
+        env = captured_kwargs["env"]
+        assert env.get("MY_CUSTOM_VAR") == "hello"
+        assert "HOME" in env
+
+    def test_no_env_override_when_no_api_key(self, tmp_path, monkeypatch):
+        """When ANTHROPIC_API_KEY is not set, no env override needed."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        captured_kwargs = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        backend = ClaudeCodeBackend()
+        backend.run("test prompt", cwd=tmp_path)
+
+        # Should not pass explicit env when no API key to strip
+        assert "env" not in captured_kwargs or captured_kwargs["env"] is None

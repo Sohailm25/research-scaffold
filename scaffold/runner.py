@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,6 +92,11 @@ class ClaudeCodeBackend:
         Uses --dangerously-skip-permissions so the agent can use tools
         (Read, Write, Bash, etc.) in non-interactive mode.
         """
+        # Strip ANTHROPIC_API_KEY so claude CLI uses OAuth instead of API credits
+        env = None
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+
         try:
             proc = subprocess.run(
                 [
@@ -103,6 +109,7 @@ class ClaudeCodeBackend:
                 capture_output=True,
                 text=True,
                 timeout=timeout if timeout is not None else self.default_timeout,
+                env=env,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             stderr = ""

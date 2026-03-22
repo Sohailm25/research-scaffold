@@ -196,6 +196,11 @@ Each gap has a severity, status, and description of what's needed to close it.
 **Was:** When the agent failed to start (e.g., "Credit balance is too low", CLI not found), the orchestrator treated each failed run the same as a successful run with missing metrics. It burned through all 20 iterations in ~40 seconds, each producing no result.json, each evaluating as all-SKIP. No distinction between "agent ran but produced no metrics" and "agent cannot start."
 **Fix:** Added consecutive agent failure tracking. If the agent returns `success=False` with non-zero returncode for `max_consecutive_agent_failures` (3) iterations in a row, the orchestrator logs an `agent_error_abort` event and stops early. The counter resets when an agent run succeeds. 3 new tests.
 
+### G32: ClaudeCodeBackend uses API key instead of OAuth (P0) -- FIXED
+**File:** `scaffold/runner.py`
+**Was:** ClaudeCodeBackend launched `claude --print` as a subprocess that inherited the parent process environment. When `ANTHROPIC_API_KEY` was set (e.g., for other tools), the CLI used API credits instead of the user's OAuth session. This caused "Credit balance is too low" failures even when the user was logged in with OAuth.
+**Fix:** Before spawning the subprocess, ClaudeCodeBackend now checks for `ANTHROPIC_API_KEY` in the environment and strips it if present, so the CLI falls through to OAuth authentication. Other env vars are preserved. 3 new tests.
+
 ### G23: No budget/cost tracking
 **Severity:** P3
 **File:** `scaffold/config.py`, `scaffold/orchestrator.py`
