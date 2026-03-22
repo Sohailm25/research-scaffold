@@ -37,6 +37,7 @@ _DIRECTORIES = (
     "journal",
     "journal/logs",
     ".scaffold",
+    ".scaffold/phase_summaries",
 )
 
 # Map from template file name to output path (relative to experiment root).
@@ -53,6 +54,7 @@ _TEMPLATE_MAP = {
     "PREREG.md.j2": "history/PREREG.md",
     "SESSION_TEMPLATE.md.j2": "sessions/SESSION_TEMPLATE.md",
     "RESULTS_INDEX.md.j2": "results/RESULTS_INDEX.md",
+    "LITERATURE_REVIEW.md.j2": "background-work/LITERATURE_REVIEW.md",
 }
 
 
@@ -218,6 +220,11 @@ def init_experiment(
         template = env.get_template(template_name)
         rendered = template.render(context)
         (exp_dir / output_path).write_text(rendered)
+
+    # 2b. Copy AGENTS.md to CLAUDE.md (Claude Code reads CLAUDE.md for project instructions)
+    import shutil
+
+    shutil.copy2(exp_dir / "AGENTS.md", exp_dir / "CLAUDE.md")
 
     # 3. Create journal/current_state.md directly
     _write_journal_current_state(exp_dir, experiment_name)

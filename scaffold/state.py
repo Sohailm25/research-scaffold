@@ -45,6 +45,7 @@ class PhaseState:
     status: str = "NOT_STARTED"
     iteration_count: int = 0
     metrics: dict = field(default_factory=dict)
+    metrics_history: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -115,7 +116,11 @@ class ExperimentState:
     def load(cls, path: Path) -> ExperimentState:
         """Load experiment state from a JSON file."""
         data = json.loads(path.read_text())
-        phases = [PhaseState(**p) for p in data.pop("phases")]
+        phases = []
+        for p in data.pop("phases"):
+            if "metrics_history" not in p:
+                p["metrics_history"] = []
+            phases.append(PhaseState(**p))
         return cls(phases=phases, **data)
 
     def _find_phase(self, phase_name: str) -> PhaseState:

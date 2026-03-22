@@ -40,20 +40,41 @@ This preregistration covers the {{ experiment_name }} experiment.
 {%- endif %}
 {% endfor %}
 
-## Statistics Defaults
+## Statistics
+
+### Multiple Comparisons
+- Correction method: {{ statistics.get('multiple_comparisons_correction', 'Bonferroni (specify alternative if justified)') }}
+
+### Effect Size Reporting
+- Metric: {{ statistics.get('effect_size_metric', "Cohen's d or equivalent (specify before claim-bearing runs)") }}
+- Practical significance threshold: {{ statistics.get('practical_significance_threshold', 'Define before confirmatory phase') }}
+
+### Confidence Intervals
+- Method: {{ statistics.get('confidence_interval_method', 'Bootstrap 95% CI, 10000 replicates') }}
+
+### Stopping Rules
+- Rule: {{ statistics.get('stopping_rule', 'Fixed sample size; no early stopping without pre-registration amendment') }}
 {% if statistics %}
+
+### Additional Parameters
 {%- for key, value in statistics.items() %}
+{%- if key not in ('multiple_comparisons_correction', 'effect_size_metric', 'practical_significance_threshold', 'confidence_interval_method', 'stopping_rule') %}
 - {{ key }}: {{ value }}
+{%- endif %}
 {%- endfor %}
-{% else %}
-- No statistics defaults specified. Define before claim-bearing runs.
 {% endif %}
 
 ## Reproducibility
+
+- Random seed: {{ reproducibility.get('random_seed', 'Specify before any stochastic computation') }}
+- Dependency pinning: {{ reproducibility.get('dependency_pinning', 'requirements.txt or pyproject.toml locked at experiment init') }}
+- Environment: {{ reproducibility.get('environment', 'Record Python version, OS, hardware in result.json') }}
 {% if reproducibility %}
+
+### Additional Constraints
 {%- for key, value in reproducibility.items() %}
+{%- if key not in ('random_seed', 'dependency_pinning', 'environment') %}
 - {{ key }}: {{ value }}
+{%- endif %}
 {%- endfor %}
-{% else %}
-- No reproducibility constraints specified.
 {% endif %}

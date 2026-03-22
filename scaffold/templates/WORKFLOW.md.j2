@@ -32,6 +32,36 @@ The previous iteration failed the following gates. Address these issues before r
 {% endif %}
 {% endraw %}
 
+{% raw %}
+{% if completed_phases %}
+## Prior Phase Results
+
+The following phases have already completed. Use these results to inform your work:
+
+{% for cp in completed_phases %}
+### {{ cp.phase_name }} ({{ cp.iterations }} iteration{{ "s" if cp.iterations != 1 else "" }})
+
+| Metric | Value |
+|--------|-------|
+{% for metric_name, metric_value in cp.metrics.items() %}| {{ metric_name }} | {{ metric_value }} |
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endraw %}
+
+{% raw %}
+{% if iteration == 1 and not completed_phases %}
+## Literature Review Pre-Check
+
+Before starting the first phase, confirm that `background-work/LITERATURE_REVIEW.md` has been completed. If it is still a template with placeholder text, complete the literature review FIRST:
+
+1. Search for prior work related to the research question
+2. Document what is known, what is unknown, and what this experiment will test that is new
+3. Record at least 3 relevant papers in `background-work/REFERENCES.md`
+4. Only then proceed to the experimental task below
+{% endif %}
+{% endraw %}
+
 ## Context Reading List
 
 Before starting work, read the following files in order:
@@ -42,6 +72,7 @@ Before starting work, read the following files in order:
 4. `DECISIONS.md`
 5. `history/PREREG.md`
 6. `configs/experiment.yaml`
+7. `background-work/LITERATURE_REVIEW.md`
 
 ## Epistemic Contract
 
@@ -65,11 +96,73 @@ Execute the dispatched task for phase `{{ phase }}`, lane `{{ lane }}`:
 
 {{ task }}
 
+{% if phase_type %}
+## Phase Guidance
+
+{% if phase_type == "setup" %}
+**Setup phase.** Explore broadly. Validate infrastructure and data pipelines. Do NOT run claim-bearing experiments. Focus on:
+- Confirming all scripts run end-to-end without errors
+- Validating data loading and preprocessing
+- Checking that metrics computation produces plausible values
+- Identifying potential confounds before they contaminate results
+
+{% elif phase_type == "pilot" %}
+**Pilot phase.** Run on development model or small sample. Results are exploratory, not evidential. Focus on:
+- Calibrating expectations for effect sizes and runtime
+- Identifying bugs or implementation errors early
+- Testing the full pipeline on a small scale before committing to expensive runs
+- Documenting confounds and edge cases discovered during exploration
+
+{% elif phase_type == "confirm" %}
+**Confirmatory phase.** Follow the pre-registered plan in `history/PREREG.md` exactly. Use the primary model and full sample size. Any deviation from the plan MUST be logged in `DECISIONS.md` with justification. Focus on:
+- Executing the exact analysis specified in the preregistration
+- Reporting all pre-specified metrics, including null results
+- Applying multiple comparisons correction if running more than one statistical test
+- Documenting any post-hoc analyses separately from confirmatory results
+
+{% elif phase_type == "review" %}
+**Review phase.** No new experiments. Synthesize findings from prior phases. Focus on:
+- Checking for confounds missed during execution
+- Verifying that claims are proportional to evidence
+- Updating CURRENT_STATE.md with final assessment
+- Identifying limitations and alternative explanations
+
+{% elif phase_type == "writeup" %}
+**Writeup phase.** No new experiments. Draft paper sections from confirmed artifacts only. Focus on:
+- Writing methods, results, and discussion from registered artifacts
+- Ensuring all claims use non-causal language unless causal design warrants it
+- Including effect sizes and confidence intervals for all key results
+- Documenting negative results alongside positive ones
+
+{% endif %}
+{% endif %}
+
+{% if phase_type == "pilot" or phase_type == "confirm" %}
+## Confound Checklist
+
+Before running experiments in this phase, verify each item:
+
+1. **Data leakage:** Is any test data accessible during training or fitting?
+2. **Selection bias:** Is the sample representative? What was excluded and why?
+3. **Confirmation bias:** Am I running this experiment expecting a specific result? What evidence would change my mind?
+4. **Multiple comparisons:** How many statistical tests are being run? Is correction (Bonferroni, Holm, FDR) applied?
+5. **Confound variables:** What variables co-vary with the independent variable? Could any explain the observed effect?
+6. **Implementation validity:** Has the implementation been verified independently (not just "it runs and produces plausible numbers")?
+
+Document your answers in `SCRATCHPAD.md` before proceeding.
+{% endif %}
+
 ### Phase Gates
 
 The following gates must be met for this phase to advance:
 
 {{ gates_display }}
+
+{% if random_seed is defined and random_seed is not none %}
+### Reproducibility
+
+Use random seed **{{ random_seed }}** for all stochastic operations (model sampling, data shuffling, train/test splits). Log the actual seed used in `result.json` under `metrics.random_seed_used`.
+{% endif %}
 
 ### Result Reporting
 

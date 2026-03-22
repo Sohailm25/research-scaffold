@@ -13,7 +13,7 @@ from scaffold.config import ExperimentConfig, load_config
 from scaffold.gates import PhaseGateReport, evaluate_phase_gates
 from scaffold.observability import SessionLogger
 from scaffold.runner import AgentRunner, RunResult
-from scaffold.state import ExperimentState
+from scaffold.state import ExperimentState, _now_iso
 from scaffold.workflow import load_workflow, render_prompt
 from scaffold.workspace import WorkspaceManager
 
@@ -137,6 +137,17 @@ class Orchestrator:
                     )
                 gates_display = "\n".join(gates_lines) if gates_lines else "No gates defined for this phase."
 
+                # Load completed phase summaries for inter-phase context
+                completed_phases = []
+                summaries_dir = self.experiment_dir / ".scaffold" / "phase_summaries"
+                if summaries_dir.exists():
+                    for summary_file in sorted(summaries_dir.glob("*.json")):
+                        try:
+                            summary = json.loads(summary_file.read_text())
+                            completed_phases.append(summary)
+                        except (json.JSONDecodeError, OSError):
+                            pass
+
                 context = {
                     "phase": phase_name,
                     "lane": phase_config.name,
@@ -145,6 +156,9 @@ class Orchestrator:
                     "iteration": iterations,
                     "max_iterations": self.max_iterations,
                     "previous_failures": previous_failures,
+                    "phase_type": phase_config.phase_type,
+                    "completed_phases": completed_phases,
+                    "random_seed": self.config.random_seed,
                 }
                 try:
                     prompt = render_prompt(workflow, context)
@@ -207,6 +221,15 @@ class Orchestrator:
                 iteration=iterations,
             )
 
+            # Record metrics snapshot in phase history
+            phase_state = self.state._find_phase(phase_name)
+            phase_state.metrics_history.append({
+                "iteration": iterations,
+                "timestamp": _now_iso(),
+                "metrics": dict(metrics),
+                "gate_passed": report.overall_pass,
+            })
+
             # Post gate report to Linear
             if self._linear_client and self._linear_issue_id:
                 try:
@@ -240,6 +263,20 @@ class Orchestrator:
                 # Gates passed
                 self.state.advance_phase(phase_name, "GATE_PASSED")
                 self._save_state()
+
+                # Write phase summary for inter-phase context
+                summary = {
+                    "phase_name": phase_name,
+                    "iterations": iterations,
+                    "metrics": dict(metrics),
+                    "gate_passed": True,
+                    "timestamp": _now_iso(),
+                }
+                summaries_dir = self.experiment_dir / ".scaffold" / "phase_summaries"
+                summaries_dir.mkdir(parents=True, exist_ok=True)
+                (summaries_dir / f"{phase_name}.json").write_text(
+                    json.dumps(summary, indent=2) + "\n"
+                )
 
                 if phase_config.requires_human_review:
                     self.state.advance_phase(phase_name, "HUMAN_REVIEW")

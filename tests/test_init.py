@@ -57,6 +57,7 @@ class TestDirectoryStructure:
         "journal",
         "journal/logs",
         ".scaffold",
+        ".scaffold/phase_summaries",
     ]
 
     def test_all_expected_directories_exist(self, experiment_dir: Path):
@@ -87,6 +88,7 @@ class TestRenderedFiles:
         ".gitignore",
         "README.md",
         "AGENTS.md",
+        "CLAUDE.md",
         "WORKFLOW.md",
         "CURRENT_STATE.md",
         "DECISIONS.md",
@@ -96,6 +98,7 @@ class TestRenderedFiles:
         "history/PREREG.md",
         "sessions/SESSION_TEMPLATE.md",
         "background-work/REFERENCES.md",
+        "background-work/LITERATURE_REVIEW.md",
         "results/RESULTS_INDEX.md",
         "journal/current_state.md",
         ".scaffold/state.json",
@@ -152,6 +155,21 @@ class TestAgentsMdContent:
         content = (experiment_dir / "AGENTS.md").read_text()
         for lane in config.required_lanes:
             assert lane in content
+
+
+# --- CLAUDE.md Content ---
+
+
+class TestClaudeMdContent:
+    """CLAUDE.md mirrors AGENTS.md so Claude Code picks up epistemic guardrails."""
+
+    def test_claude_md_exists(self, experiment_dir: Path):
+        assert (experiment_dir / "CLAUDE.md").is_file()
+
+    def test_claude_md_matches_agents_md(self, experiment_dir: Path):
+        agents_content = (experiment_dir / "AGENTS.md").read_text()
+        claude_content = (experiment_dir / "CLAUDE.md").read_text()
+        assert agents_content == claude_content
 
 
 # --- CURRENT_STATE.md Content ---
@@ -216,6 +234,84 @@ class TestPreregContent:
         content = (experiment_dir / "history" / "PREREG.md").read_text()
         for key in config.statistics:
             assert key in content
+
+
+# --- PREREG.md Statistics Defaults ---
+
+
+class TestPreregStatisticsDefaults:
+    """PREREG.md shows structured statistics subsections with defaults."""
+
+    def test_has_multiple_comparisons_section(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Multiple Comparisons" in content
+
+    def test_has_effect_size_section(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Effect Size" in content
+
+    def test_has_confidence_intervals_section(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Confidence Intervals" in content
+
+    def test_has_stopping_rules_section(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Stopping Rules" in content
+
+    def test_shows_defaults_when_statistics_empty(self, tmp_path: Path):
+        """When statistics dict has no structured keys, defaults appear."""
+        config = load_config(MINIMAL_CONFIG)
+        exp_dir = init_experiment(config, root=tmp_path, skip_external=True)
+        content = (exp_dir / "history" / "PREREG.md").read_text()
+        assert "Bonferroni" in content  # default for multiple comparisons
+        assert "Bootstrap 95%" in content  # default for CIs
+
+    def test_shows_config_value_when_provided(self, tmp_path: Path):
+        """When statistics dict has a structured key, that value appears instead of default."""
+        config = load_config(MINIMAL_CONFIG)
+        config.statistics["multiple_comparisons_correction"] = "Holm-Bonferroni"
+        exp_dir = init_experiment(config, root=tmp_path, name="stats-test", skip_external=True)
+        content = (exp_dir / "history" / "PREREG.md").read_text()
+        assert "Holm-Bonferroni" in content
+        assert "Bonferroni (specify" not in content  # default should NOT appear
+
+    def test_additional_params_still_rendered(self, experiment_dir: Path, config: ExperimentConfig):
+        """Non-structured statistics keys (like clustering_distance) still appear."""
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "clustering_distance" in content
+        assert "jensen_shannon_divergence" in content
+
+
+# --- PREREG.md Reproducibility Defaults ---
+
+
+class TestPreregReproducibilityDefaults:
+    """PREREG.md shows structured reproducibility subsections with defaults."""
+
+    def test_has_random_seed_field(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Random seed" in content
+
+    def test_has_dependency_pinning_field(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Dependency pinning" in content
+
+    def test_has_environment_field(self, experiment_dir: Path):
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "Environment" in content
+
+    def test_shows_defaults_for_missing_keys(self, tmp_path: Path):
+        """When reproducibility dict lacks structured keys, defaults appear."""
+        config = load_config(MINIMAL_CONFIG)
+        exp_dir = init_experiment(config, root=tmp_path, skip_external=True)
+        content = (exp_dir / "history" / "PREREG.md").read_text()
+        assert "Specify before any stochastic computation" in content  # random_seed default
+
+    def test_additional_repro_params_still_rendered(self, experiment_dir: Path, config: ExperimentConfig):
+        """Non-structured reproducibility keys still appear."""
+        content = (experiment_dir / "history" / "PREREG.md").read_text()
+        assert "prereg_publication_target" in content
+        assert "freeze_dependencies" in content
 
 
 # --- experiment.yaml Content ---
@@ -572,3 +668,44 @@ class TestGitInit:
         """When skip_external=True, no .git directory should be created."""
         exp_dir = init_experiment(config, root=tmp_path, skip_external=True)
         assert not (exp_dir / ".git").exists(), "Expected no .git directory when skip_external=True"
+
+
+# --- Literature Review ---
+
+
+class TestLiteratureReview:
+    """background-work/LITERATURE_REVIEW.md is rendered from template at init time."""
+
+    def test_literature_review_exists(self, experiment_dir: Path):
+        """LITERATURE_REVIEW.md is created in background-work/ after init."""
+        path = experiment_dir / "background-work" / "LITERATURE_REVIEW.md"
+        assert path.is_file(), "Missing file: background-work/LITERATURE_REVIEW.md"
+
+    def test_literature_review_contains_experiment_name(
+        self, experiment_dir: Path, config: ExperimentConfig
+    ):
+        """Rendered file contains the experiment name from config."""
+        content = (experiment_dir / "background-work" / "LITERATURE_REVIEW.md").read_text()
+        assert config.name in content
+
+    def test_literature_review_contains_research_question(
+        self, experiment_dir: Path, config: ExperimentConfig
+    ):
+        """Rendered file contains the research question from config."""
+        content = (experiment_dir / "background-work" / "LITERATURE_REVIEW.md").read_text()
+        assert config.research_question in content
+
+    def test_literature_review_has_what_is_known_section(self, experiment_dir: Path):
+        """Rendered file has the 'What Is Known' section."""
+        content = (experiment_dir / "background-work" / "LITERATURE_REVIEW.md").read_text()
+        assert "## What Is Known" in content
+
+    def test_literature_review_has_what_is_unknown_section(self, experiment_dir: Path):
+        """Rendered file has the 'What Is Unknown' section."""
+        content = (experiment_dir / "background-work" / "LITERATURE_REVIEW.md").read_text()
+        assert "## What Is Unknown" in content
+
+    def test_literature_review_has_what_this_experiment_will_test_section(self, experiment_dir: Path):
+        """Rendered file has the 'What This Experiment Will Test That Is New' section."""
+        content = (experiment_dir / "background-work" / "LITERATURE_REVIEW.md").read_text()
+        assert "## What This Experiment Will Test" in content

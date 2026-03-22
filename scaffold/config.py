@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 VALID_COMPARATORS = frozenset({"gte", "lte", "gt", "lt", "eq"})
+VALID_PHASE_TYPES = frozenset({"setup", "pilot", "confirm", "review", "writeup"})
 
 REQUIRED_TOP_LEVEL_FIELDS = (
     "name",
@@ -62,6 +63,14 @@ class PhaseConfig:
     gates: list[GateConfig] = field(default_factory=list)
     requires_human_review: bool = False
     depends_on: list[str] = field(default_factory=list)
+    phase_type: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.phase_type is not None and self.phase_type not in VALID_PHASE_TYPES:
+            raise ValueError(
+                f"Invalid phase_type '{self.phase_type}'. "
+                f"Must be one of: {sorted(VALID_PHASE_TYPES)}"
+            )
 
 
 @dataclass
@@ -107,6 +116,7 @@ class ExperimentConfig:
     guardrails: list[str]
     budget: float | None = None
     reproducibility: dict = field(default_factory=dict)
+    random_seed: int | None = None
 
 
 def _parse_gate(raw: dict) -> GateConfig:
@@ -127,6 +137,7 @@ def _parse_phase(raw: dict) -> PhaseConfig:
         gates=gates,
         requires_human_review=raw.get("requires_human_review", False),
         depends_on=raw.get("depends_on", []) or [],
+        phase_type=raw.get("phase_type"),
     )
 
 
@@ -200,6 +211,10 @@ def load_config(path: Path) -> ExperimentConfig:
     budget_val = raw.get("budget")
     budget = float(budget_val) if budget_val is not None else None
 
+    # Parse random seed
+    random_seed_val = raw.get("random_seed")
+    random_seed = int(random_seed_val) if random_seed_val is not None else None
+
     return ExperimentConfig(
         name=raw["name"],
         thesis=raw["thesis"],
@@ -215,4 +230,5 @@ def load_config(path: Path) -> ExperimentConfig:
         guardrails=raw.get("guardrails", []) or [],
         budget=budget,
         reproducibility=raw.get("reproducibility", {}) or {},
+        random_seed=random_seed,
     )

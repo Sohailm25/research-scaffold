@@ -2,8 +2,10 @@
 # ABOUTME: Covers YAML frontmatter parsing, prompt body extraction, and Jinja2 rendering.
 
 import textwrap
+from pathlib import Path
 
 import pytest
+from jinja2 import Environment, FileSystemLoader
 
 from scaffold.workflow import WorkflowConfig, load_workflow, render_prompt
 
@@ -151,3 +153,265 @@ class TestRenderPrompt:
         assert "- a" in result
         assert "- b" in result
         assert "- c" in result
+
+
+class TestWorkflowTemplatePhaseGuidance:
+    """Tests that WORKFLOW.md.j2 preserves phase_type guidance for runtime rendering."""
+
+    TEMPLATE_PATH = Path(__file__).parent.parent / "scaffold" / "templates" / "WORKFLOW.md.j2"
+
+    def _render_init_stage(self, context: dict) -> str:
+        """Stage 1: Render the .j2 template as init_experiment would."""
+        env = Environment(
+            loader=FileSystemLoader(str(self.TEMPLATE_PATH.parent)),
+            keep_trailing_newline=True,
+        )
+        template = env.get_template(self.TEMPLATE_PATH.name)
+        return template.render(**context)
+
+    def _render_runtime_stage(self, init_output: str, context: dict) -> str:
+        """Stage 2: Render the init output as the orchestrator would at runtime."""
+        from jinja2 import BaseLoader
+        from scaffold.workflow import _SilentUndefined
+
+        env = Environment(loader=BaseLoader(), undefined=_SilentUndefined)
+        template = env.from_string(init_output)
+        return template.render(**context)
+
+    def test_template_preserves_phase_type_block(self):
+        """After init rendering, the WORKFLOW.md contains literal {% if phase_type %} for runtime."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        assert "{% if phase_type %}" in init_output
+        assert "Confirmatory phase" in init_output
+
+    def test_confirm_phase_type_renders_at_runtime(self):
+        """Two-stage rendering: phase_type='confirm' produces Confirmatory guidance."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+
+        runtime_context = {
+            "phase": "phase1",
+            "lane": "oracle",
+            "task": "run experiment",
+            "gates_display": "No gates",
+            "iteration": 1,
+            "max_iterations": 5,
+            "previous_failures": "",
+            "phase_type": "confirm",
+        }
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+        assert "Confirmatory phase" in final_output
+        assert "pre-registered plan" in final_output
+
+    def test_pilot_phase_type_renders_at_runtime(self):
+        """Two-stage rendering: phase_type='pilot' produces Pilot guidance."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+
+        runtime_context = {
+            "phase": "phase1",
+            "lane": "oracle",
+            "task": "run experiment",
+            "gates_display": "No gates",
+            "iteration": 1,
+            "max_iterations": 5,
+            "previous_failures": "",
+            "phase_type": "pilot",
+        }
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+        assert "Pilot phase" in final_output
+        assert "exploratory, not evidential" in final_output
+
+    def test_no_phase_type_omits_guidance(self):
+        """Two-stage rendering: phase_type=None produces no Phase Guidance section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+
+        runtime_context = {
+            "phase": "phase1",
+            "lane": "oracle",
+            "task": "run experiment",
+            "gates_display": "No gates",
+            "iteration": 1,
+            "max_iterations": 5,
+            "previous_failures": "",
+        }
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+        assert "Phase Guidance" not in final_output
+
+
+class TestWorkflowTemplateConfoundChecklist:
+    """Tests that WORKFLOW.md.j2 renders the confound checklist for pilot/confirm phases only."""
+
+    TEMPLATE_PATH = Path(__file__).parent.parent / "scaffold" / "templates" / "WORKFLOW.md.j2"
+
+    def _render_init_stage(self, context: dict) -> str:
+        """Stage 1: Render the .j2 template as init_experiment would."""
+        env = Environment(
+            loader=FileSystemLoader(str(self.TEMPLATE_PATH.parent)),
+            keep_trailing_newline=True,
+        )
+        template = env.get_template(self.TEMPLATE_PATH.name)
+        return template.render(**context)
+
+    def _render_runtime_stage(self, init_output: str, context: dict) -> str:
+        """Stage 2: Render the init output as the orchestrator would at runtime."""
+        from jinja2 import BaseLoader
+        from scaffold.workflow import _SilentUndefined
+
+        env = Environment(loader=BaseLoader(), undefined=_SilentUndefined)
+        template = env.from_string(init_output)
+        return template.render(**context)
+
+    def _make_runtime_context(self, **overrides) -> dict:
+        """Build a standard runtime context with optional overrides."""
+        ctx = {
+            "phase": "phase1",
+            "lane": "oracle",
+            "task": "run experiment",
+            "gates_display": "No gates",
+            "iteration": 1,
+            "max_iterations": 5,
+            "previous_failures": "",
+        }
+        ctx.update(overrides)
+        return ctx
+
+    def test_confound_checklist_renders_for_pilot(self):
+        """Two-stage rendering: phase_type='pilot' produces the Confound Checklist section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(phase_type="pilot")
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Confound Checklist" in final_output
+        assert "Data leakage" in final_output
+
+    def test_confound_checklist_renders_for_confirm(self):
+        """Two-stage rendering: phase_type='confirm' produces the Confound Checklist section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(phase_type="confirm")
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Confound Checklist" in final_output
+        assert "Data leakage" in final_output
+
+    def test_confound_checklist_absent_for_writeup(self):
+        """Two-stage rendering: phase_type='writeup' does NOT produce the Confound Checklist."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(phase_type="writeup")
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Confound Checklist" not in final_output
+
+    def test_confound_checklist_absent_when_no_phase_type(self):
+        """Two-stage rendering: no phase_type produces no Confound Checklist."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context()  # no phase_type key
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Confound Checklist" not in final_output
+
+
+class TestWorkflowTemplateRandomSeed:
+    """Tests that WORKFLOW.md.j2 renders the reproducibility seed section conditionally."""
+
+    TEMPLATE_PATH = Path(__file__).parent.parent / "scaffold" / "templates" / "WORKFLOW.md.j2"
+
+    def _render_init_stage(self, context: dict) -> str:
+        """Stage 1: Render the .j2 template as init_experiment would."""
+        env = Environment(
+            loader=FileSystemLoader(str(self.TEMPLATE_PATH.parent)),
+            keep_trailing_newline=True,
+        )
+        template = env.get_template(self.TEMPLATE_PATH.name)
+        return template.render(**context)
+
+    def _render_runtime_stage(self, init_output: str, context: dict) -> str:
+        """Stage 2: Render the init output as the orchestrator would at runtime."""
+        from jinja2 import BaseLoader
+        from scaffold.workflow import _SilentUndefined
+
+        env = Environment(loader=BaseLoader(), undefined=_SilentUndefined)
+        template = env.from_string(init_output)
+        return template.render(**context)
+
+    def _make_runtime_context(self, **overrides) -> dict:
+        """Build a standard runtime context with optional overrides."""
+        ctx = {
+            "phase": "phase1",
+            "lane": "oracle",
+            "task": "run experiment",
+            "gates_display": "No gates",
+            "iteration": 1,
+            "max_iterations": 5,
+            "previous_failures": "",
+        }
+        ctx.update(overrides)
+        return ctx
+
+    def test_seed_instruction_renders_when_set(self):
+        """Two-stage rendering: random_seed=42 produces the Reproducibility section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(random_seed=42)
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Reproducibility" in final_output
+        assert "random seed **42**" in final_output
+        assert "metrics.random_seed_used" in final_output
+
+    def test_seed_instruction_absent_when_none(self):
+        """Two-stage rendering: random_seed=None omits the Reproducibility section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(random_seed=None)
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Reproducibility" not in final_output
+
+    def test_seed_instruction_absent_when_not_set(self):
+        """Two-stage rendering: no random_seed key omits the Reproducibility section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context()  # no random_seed key
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Reproducibility" not in final_output

@@ -339,6 +339,96 @@ class TestRunAll:
         assert human_review_results[0].phase_name == "phase2_pattern_analysis"
 
 
+class _PromptCapturingBackend:
+    """Test double that captures the prompt passed to run() for inspection."""
+
+    def __init__(self, metrics: dict | None = None):
+        self.metrics = metrics or {}
+        self.captured_prompts: list[str] = []
+
+    def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
+        self.captured_prompts.append(prompt)
+
+        # Write result.json so orchestrator's _collect_metrics picks it up
+        results_dir = cwd / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        result_data = {"metrics": self.metrics, "status": "success"}
+        (results_dir / "result.json").write_text(json.dumps(result_data))
+
+        return RunResult(
+            success=True,
+            metrics=self.metrics,
+            stdout="fake output",
+            returncode=0,
+        )
+
+
+class TestContextIncludesPhaseType:
+    """Tests that the orchestrator includes phase_type in the render context."""
+
+    def test_phase_type_rendered_in_prompt(self, tmp_path):
+        """When phase_type is set, the rendered prompt contains it."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Overwrite experiment config to include phase_type on phase1
+        import shutil
+        import yaml as _yaml
+
+        config_path = exp_dir / "configs" / "experiment.yaml"
+        with open(config_path) as f:
+            raw = _yaml.safe_load(f)
+        raw["phases"][0]["phase_type"] = "pilot"
+        config_path.write_text(_yaml.dump(raw))
+
+        # Write a WORKFLOW.md that renders phase_type
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\nPhase: {{ phase }}\nType: {{ phase_type }}\n"
+        )
+
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _PromptCapturingBackend(metrics=passing_metrics)
+        runner = AgentRunner(backend=backend)
+        orchestrator = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orchestrator.run_phase("phase1_oracle_alpha")
+
+        assert len(backend.captured_prompts) >= 1
+        rendered = backend.captured_prompts[0]
+        assert "Type: pilot" in rendered
+
+    def test_phase_type_none_renders_empty(self, tmp_path):
+        """When phase_type is None, it renders as empty string (SilentUndefined)."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Write a WORKFLOW.md that renders phase_type
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\nPhase: {{ phase }}\nType: {{ phase_type }}\n"
+        )
+
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _PromptCapturingBackend(metrics=passing_metrics)
+        runner = AgentRunner(backend=backend)
+        orchestrator = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orchestrator.run_phase("phase1_oracle_alpha")
+
+        assert len(backend.captured_prompts) >= 1
+        rendered = backend.captured_prompts[0]
+        # phase_type is None, so _SilentUndefined renders it as empty
+        assert "Type: " in rendered
+        assert "Type: pilot" not in rendered
+
+
 class _RecordingRunner(AgentRunner):
     """AgentRunner subclass that records hooks passed to execute()."""
 
@@ -409,6 +499,75 @@ class TestOrchestratorPassesHooks:
         passed_hooks = recording_runner.execute_calls[0]["hooks"]
         assert passed_hooks is not None
         assert passed_hooks == {}
+
+
+class TestContextIncludesRandomSeed:
+    """Tests that the orchestrator includes random_seed in the render context."""
+
+    def test_random_seed_rendered_in_prompt(self, tmp_path):
+        """When random_seed is set in config, the rendered prompt contains it."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Overwrite experiment config to include random_seed
+        import yaml as _yaml
+
+        config_path = exp_dir / "configs" / "experiment.yaml"
+        with open(config_path) as f:
+            raw = _yaml.safe_load(f)
+        raw["random_seed"] = 42
+        config_path.write_text(_yaml.dump(raw))
+
+        # Write a WORKFLOW.md that renders random_seed
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "{% if random_seed is defined and random_seed is not none %}"
+            "Seed: {{ random_seed }}"
+            "{% endif %}\n"
+        )
+
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _PromptCapturingBackend(metrics=passing_metrics)
+        runner = AgentRunner(backend=backend)
+        orchestrator = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orchestrator.run_phase("phase1_oracle_alpha")
+
+        assert len(backend.captured_prompts) >= 1
+        rendered = backend.captured_prompts[0]
+        assert "Seed: 42" in rendered
+
+    def test_random_seed_none_omits_section(self, tmp_path):
+        """When random_seed is None, the seed section is not rendered."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Write a WORKFLOW.md that conditionally renders random_seed
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "{% if random_seed is defined and random_seed is not none %}"
+            "Seed: {{ random_seed }}"
+            "{% endif %}\n"
+        )
+
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _PromptCapturingBackend(metrics=passing_metrics)
+        runner = AgentRunner(backend=backend)
+        orchestrator = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orchestrator.run_phase("phase1_oracle_alpha")
+
+        assert len(backend.captured_prompts) >= 1
+        rendered = backend.captured_prompts[0]
+        assert "Seed:" not in rendered
 
 
 # --- Linear Integration ---
@@ -736,6 +895,66 @@ class TestInterIterationFeedback:
         assert "0.5" in second_prompt
 
 
+class TestMetricsHistoryOrchestrator:
+    """Tests that orchestrator appends to metrics_history after gate evaluation."""
+
+    def test_metrics_history_appended_after_gate_pass(self, tmp_path):
+        """After gate evaluation that passes, metrics_history has an entry."""
+        exp_dir = _create_experiment(tmp_path)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator(exp_dir, metrics=passing_metrics, max_iterations=1)
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        state = ExperimentState.load(exp_dir / ".scaffold" / "state.json")
+        phase = state._find_phase("phase1_oracle_alpha")
+        assert len(phase.metrics_history) == 1
+        entry = phase.metrics_history[0]
+        assert entry["iteration"] == 1
+        assert entry["metrics"]["cross_entropy_delta_nats"] == 0.5
+        assert entry["gate_passed"] is True
+        assert "timestamp" in entry
+
+    def test_metrics_history_appended_after_gate_fail(self, tmp_path):
+        """After gate evaluation that fails, metrics_history has entries for each iteration."""
+        exp_dir = _create_experiment(tmp_path)
+        failing_metrics = {"cross_entropy_delta_nats": 0.001, "p_value": 0.5}
+        orch, _ = _make_orchestrator(exp_dir, metrics=failing_metrics, max_iterations=2)
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        state = ExperimentState.load(exp_dir / ".scaffold" / "state.json")
+        phase = state._find_phase("phase1_oracle_alpha")
+        assert len(phase.metrics_history) == 2
+        assert phase.metrics_history[0]["iteration"] == 1
+        assert phase.metrics_history[0]["gate_passed"] is False
+        assert phase.metrics_history[1]["iteration"] == 2
+        assert phase.metrics_history[1]["gate_passed"] is False
+
+    def test_metrics_history_across_retry_then_pass(self, tmp_path):
+        """Metrics history accumulates across fail then pass iterations."""
+        exp_dir = _create_experiment(tmp_path)
+        failing = {"cross_entropy_delta_nats": 0.001, "p_value": 0.5}
+        passing = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+
+        backend = _SequentialBackend(metrics_sequence=[failing, passing])
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=3,
+        )
+
+        result = orch.run_phase("phase1_oracle_alpha")
+        assert result.gate_passed is True
+
+        state = ExperimentState.load(exp_dir / ".scaffold" / "state.json")
+        phase = state._find_phase("phase1_oracle_alpha")
+        assert len(phase.metrics_history) == 2
+        assert phase.metrics_history[0]["gate_passed"] is False
+        assert phase.metrics_history[1]["gate_passed"] is True
+
+
 class TestOrchestratorDefaultTimeout:
     """Tests for Orchestrator passing default_timeout to runner.execute."""
 
@@ -872,3 +1091,114 @@ class TestAgentErrorEarlyTermination:
 
         # Should have run more than 3 iterations (failure count reset after success)
         assert len(backend.calls) > 3
+
+
+# --- Inter-phase Context (Phase Summaries) ---
+
+
+class TestPhaseSummaryWritten:
+    """Tests that orchestrator writes phase summary JSON after gate pass."""
+
+    def test_phase_summary_written_on_gate_pass(self, tmp_path):
+        """After a phase passes gates, a summary JSON is written to .scaffold/phase_summaries/."""
+        exp_dir = _create_experiment(tmp_path)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator(exp_dir, metrics=passing_metrics, max_iterations=1)
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        summary_path = exp_dir / ".scaffold" / "phase_summaries" / "phase1_oracle_alpha.json"
+        assert summary_path.exists(), "Phase summary JSON not written after gate pass"
+
+        summary = json.loads(summary_path.read_text())
+        assert summary["phase_name"] == "phase1_oracle_alpha"
+        assert summary["gate_passed"] is True
+        assert summary["iterations"] == 1
+        assert summary["metrics"]["cross_entropy_delta_nats"] == 0.5
+        assert summary["metrics"]["p_value"] == 0.001
+        assert "timestamp" in summary
+
+    def test_no_phase_summary_on_gate_fail(self, tmp_path):
+        """When all iterations fail gates, no summary JSON is written."""
+        exp_dir = _create_experiment(tmp_path)
+        failing_metrics = {"cross_entropy_delta_nats": 0.001, "p_value": 0.5}
+        orch, _ = _make_orchestrator(exp_dir, metrics=failing_metrics, max_iterations=2)
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        summaries_dir = exp_dir / ".scaffold" / "phase_summaries"
+        summary_path = summaries_dir / "phase1_oracle_alpha.json"
+        assert not summary_path.exists(), "Phase summary should NOT be written on gate failure"
+
+
+class TestInterPhaseContext:
+    """Tests that completed phase summaries are passed to subsequent phases via the prompt."""
+
+    def test_second_phase_prompt_contains_first_phase_metrics(self, tmp_path):
+        """When phase2 runs, its prompt includes phase1's metrics via completed_phases."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Write a WORKFLOW.md that renders completed_phases
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "Phase: {{ phase }}\n"
+            "{% if completed_phases %}"
+            "PRIOR RESULTS:\n"
+            "{% for cp in completed_phases %}"
+            "- {{ cp.phase_name }}: {{ cp.metrics }}\n"
+            "{% endfor %}"
+            "{% endif %}"
+        )
+
+        # Phase1 passes, then phase2 runs
+        all_metrics = {
+            "cross_entropy_delta_nats": 0.5,
+            "p_value": 0.001,
+            "silhouette_score": 0.5,
+        }
+        backend = _PromptCapturingBackend(metrics=all_metrics)
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+        orch.run_phase("phase2_pattern_analysis")
+
+        # Phase2 prompt (second captured prompt) should contain phase1's name and metrics
+        assert len(backend.captured_prompts) >= 2
+        phase2_prompt = backend.captured_prompts[1]
+        assert "PRIOR RESULTS" in phase2_prompt
+        assert "phase1_oracle_alpha" in phase2_prompt
+        assert "cross_entropy_delta_nats" in phase2_prompt
+
+    def test_first_phase_prompt_has_no_completed_phases(self, tmp_path):
+        """First phase prompt does not include completed_phases context."""
+        exp_dir = _create_experiment(tmp_path)
+
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "Phase: {{ phase }}\n"
+            "{% if completed_phases %}"
+            "PRIOR RESULTS: yes\n"
+            "{% endif %}"
+        )
+
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _PromptCapturingBackend(metrics=passing_metrics)
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        assert len(backend.captured_prompts) >= 1
+        first_prompt = backend.captured_prompts[0]
+        assert "PRIOR RESULTS" not in first_prompt

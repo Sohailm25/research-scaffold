@@ -272,3 +272,46 @@ class TestPersistence:
         filepath = tmp_path / "nested" / "dir" / "state.json"
         state.save(filepath)
         assert filepath.exists()
+
+
+class TestMetricsHistory:
+    """PhaseState tracks metrics history across iterations."""
+
+    def test_default_metrics_history_is_empty(self):
+        phase = PhaseState(name="test_phase")
+        assert phase.metrics_history == []
+
+    def test_metrics_history_serializes(self, tmp_path):
+        state = ExperimentState(
+            experiment_name="test",
+            phases=[PhaseState(
+                name="phase1",
+                metrics_history=[
+                    {"iteration": 1, "timestamp": "2026-01-01T00:00:00Z", "metrics": {"acc": 0.5}, "gate_passed": False},
+                    {"iteration": 2, "timestamp": "2026-01-02T00:00:00Z", "metrics": {"acc": 0.9}, "gate_passed": True},
+                ],
+            )],
+        )
+        path = tmp_path / "state.json"
+        state.save(path)
+        loaded = ExperimentState.load(path)
+        assert len(loaded.phases[0].metrics_history) == 2
+        assert loaded.phases[0].metrics_history[0]["metrics"]["acc"] == 0.5
+        assert loaded.phases[0].metrics_history[1]["gate_passed"] is True
+
+    def test_backward_compatible_load(self, tmp_path):
+        """Loading old state.json without metrics_history works."""
+        old_data = {
+            "experiment_name": "old-exp",
+            "status": "PLANNING",
+            "phases": [
+                {"name": "phase1", "status": "NOT_STARTED", "iteration_count": 0, "metrics": {}}
+            ],
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "current_phase": None,
+        }
+        path = tmp_path / "state.json"
+        path.write_text(json.dumps(old_data))
+        loaded = ExperimentState.load(path)
+        assert loaded.phases[0].metrics_history == []

@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from scaffold.config import (
+    VALID_PHASE_TYPES,
     ExperimentConfig,
     GateConfig,
     HypothesesConfig,
@@ -85,6 +86,22 @@ class TestPhaseConfig:
         assert p.requires_human_review is True
         assert p.depends_on == ["p1"]
 
+    def test_phase_type_default_none(self):
+        """phase_type defaults to None when not specified."""
+        p = PhaseConfig(name="p1", description="desc")
+        assert p.phase_type is None
+
+    def test_phase_type_valid(self):
+        """phase_type accepts valid values from VALID_PHASE_TYPES."""
+        for pt in VALID_PHASE_TYPES:
+            p = PhaseConfig(name="p1", description="desc", phase_type=pt)
+            assert p.phase_type == pt
+
+    def test_phase_type_invalid_raises(self):
+        """phase_type rejects values not in VALID_PHASE_TYPES."""
+        with pytest.raises(ValueError, match="phase_type"):
+            PhaseConfig(name="p1", description="desc", phase_type="invalid")
+
 
 # --- HypothesesConfig ---
 
@@ -157,6 +174,49 @@ class TestExperimentConfig:
         )
         assert cfg.budget is None
         assert cfg.reproducibility == {}
+
+    def test_random_seed_default_none(self):
+        """random_seed should default to None if not provided."""
+        cfg = ExperimentConfig(
+            name="test",
+            thesis="t",
+            research_question="q",
+            models=ModelsConfig(
+                development=ModelConfig(name="gpt2", purpose="dev"),
+                primary=ModelConfig(name="gemma", purpose="main"),
+            ),
+            runtime=RuntimeConfig(),
+            hypotheses=HypothesesConfig(primary="h"),
+            null_models=[],
+            phases=[],
+            required_lanes=[],
+            statistics={},
+            framing_locks=[],
+            guardrails=[],
+        )
+        assert cfg.random_seed is None
+
+    def test_random_seed_accepts_value(self):
+        """random_seed should store the provided integer value."""
+        cfg = ExperimentConfig(
+            name="test",
+            thesis="t",
+            research_question="q",
+            models=ModelsConfig(
+                development=ModelConfig(name="gpt2", purpose="dev"),
+                primary=ModelConfig(name="gemma", purpose="main"),
+            ),
+            runtime=RuntimeConfig(),
+            hypotheses=HypothesesConfig(primary="h"),
+            null_models=[],
+            phases=[],
+            required_lanes=[],
+            statistics={},
+            framing_locks=[],
+            guardrails=[],
+            random_seed=42,
+        )
+        assert cfg.random_seed == 42
 
 
 # --- load_config ---
@@ -231,6 +291,41 @@ class TestLoadConfig:
     def test_reproducibility_loaded(self):
         cfg = load_config(MINIMAL_CONFIG)
         assert cfg.reproducibility["prereg_publication_target"] == "local_only"
+
+    def test_phase_type_loaded_from_yaml(self, tmp_path):
+        """load_config parses phase_type from YAML phase definitions."""
+        config = {
+            "name": "test",
+            "thesis": "t",
+            "research_question": "q",
+            "models": {
+                "development": {"name": "gpt2", "purpose": "dev"},
+                "primary": {"name": "gemma", "purpose": "main"},
+            },
+            "hypotheses": {"primary": "h"},
+            "phases": [
+                {
+                    "name": "setup_phase",
+                    "description": "Setup work",
+                    "phase_type": "setup",
+                },
+                {
+                    "name": "pilot_phase",
+                    "description": "Pilot work",
+                    "phase_type": "pilot",
+                },
+                {
+                    "name": "no_type_phase",
+                    "description": "No type specified",
+                },
+            ],
+        }
+        config_path = tmp_path / "phase_type_test.yaml"
+        config_path.write_text(yaml.dump(config))
+        cfg = load_config(config_path)
+        assert cfg.phases[0].phase_type == "setup"
+        assert cfg.phases[1].phase_type == "pilot"
+        assert cfg.phases[2].phase_type is None
 
     def test_missing_required_field_raises(self):
         """A config missing 'name' should raise ValueError."""
@@ -384,6 +479,44 @@ class TestLoadConfig:
             cfg = load_config(Path(f.name))
             assert cfg.models.secondary is not None
             assert cfg.models.secondary.name == "pythia"
+
+
+    def test_load_config_with_random_seed(self, tmp_path):
+        """load_config parses random_seed from YAML as integer."""
+        config = {
+            "name": "test",
+            "thesis": "t",
+            "research_question": "q",
+            "models": {
+                "development": {"name": "gpt2", "purpose": "dev"},
+                "primary": {"name": "gemma", "purpose": "main"},
+            },
+            "hypotheses": {"primary": "h"},
+            "phases": [],
+            "random_seed": 42,
+        }
+        config_path = tmp_path / "seed_config.yaml"
+        config_path.write_text(yaml.dump(config))
+        cfg = load_config(config_path)
+        assert cfg.random_seed == 42
+
+    def test_load_config_without_random_seed(self, tmp_path):
+        """load_config defaults random_seed to None when not in YAML."""
+        config = {
+            "name": "test",
+            "thesis": "t",
+            "research_question": "q",
+            "models": {
+                "development": {"name": "gpt2", "purpose": "dev"},
+                "primary": {"name": "gemma", "purpose": "main"},
+            },
+            "hypotheses": {"primary": "h"},
+            "phases": [],
+        }
+        config_path = tmp_path / "no_seed_config.yaml"
+        config_path.write_text(yaml.dump(config))
+        cfg = load_config(config_path)
+        assert cfg.random_seed is None
 
 
 class TestNestedExperimentEnvelope:
