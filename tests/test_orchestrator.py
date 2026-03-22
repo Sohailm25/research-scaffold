@@ -730,3 +730,100 @@ class TestOrchestratorDefaultTimeout:
 
         assert len(recording_runner.execute_calls) >= 1
         assert recording_runner.execute_calls[0]["timeout"] == 3600
+
+
+class _FailingBackend:
+    """Test double that returns an error on every call (simulates credit exhaustion, CLI failure, etc.)."""
+
+    def __init__(self, stderr: str = "Credit balance is too low", returncode: int = 1):
+        self._stderr = stderr
+        self._returncode = returncode
+        self.calls: list[dict] = []
+
+    def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
+        self.calls.append({"prompt": prompt, "cwd": str(cwd), "timeout": timeout})
+        return RunResult(
+            success=False,
+            stdout="",
+            stderr=self._stderr,
+            returncode=self._returncode,
+        )
+
+
+class TestAgentErrorEarlyTermination:
+    """Tests for G31: abort retry loop when agent fails to start."""
+
+    def test_stops_after_consecutive_agent_failures(self, tmp_path):
+        """Orchestrator stops early when agent returns errors on consecutive iterations."""
+        exp_dir = _create_experiment(tmp_path)
+        backend = _FailingBackend(stderr="Credit balance is too low", returncode=1)
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir, runner=runner, max_iterations=20,
+        )
+
+        result = orch.run_phase("phase1_oracle_alpha")
+
+        # Should NOT have run all 20 iterations -- should abort early
+        assert result.iterations < 20
+        assert not result.gate_passed
+        # Should have run at most max_consecutive_agent_failures iterations
+        assert len(backend.calls) <= 3
+
+    def test_logs_agent_error_event(self, tmp_path):
+        """Orchestrator logs an agent_error event when aborting due to consecutive failures."""
+        exp_dir = _create_experiment(tmp_path)
+        backend = _FailingBackend(stderr="Credit balance is too low")
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir, runner=runner, max_iterations=20,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Check that agent_error was logged
+        log_files = list((exp_dir / "sessions" / "logs").glob("*.jsonl"))
+        assert len(log_files) >= 1
+        events = [
+            json.loads(line)
+            for line in log_files[-1].read_text().strip().split("\n")
+            if line.strip()
+        ]
+        agent_error_events = [e for e in events if e["event_type"] == "agent_error_abort"]
+        assert len(agent_error_events) == 1
+        assert "Credit balance" in agent_error_events[0]["data"]["stderr"]
+
+    def test_resets_failure_count_on_success(self, tmp_path):
+        """If agent succeeds after failures, the consecutive failure count resets."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Backend that fails twice then succeeds
+        call_count = 0
+
+        class _FlappingBackend:
+            def __init__(self):
+                self.calls = []
+
+            def run(self, prompt, cwd, timeout=None):
+                self.calls.append({"prompt": prompt})
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 2:
+                    return RunResult(
+                        success=False, stdout="", stderr="Temporary error", returncode=1,
+                    )
+                # Third call succeeds but still no metrics (gates fail)
+                return RunResult(
+                    success=True, stdout="ok", stderr="", returncode=0,
+                )
+
+        backend = _FlappingBackend()
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir, runner=runner, max_iterations=10,
+        )
+
+        result = orch.run_phase("phase1_oracle_alpha")
+
+        # Should have run more than 3 iterations (failure count reset after success)
+        assert len(backend.calls) > 3

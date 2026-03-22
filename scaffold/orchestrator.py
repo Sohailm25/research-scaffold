@@ -101,6 +101,8 @@ class Orchestrator:
 
         iterations = 0
         previous_failures = ""
+        consecutive_agent_failures = 0
+        max_consecutive_agent_failures = 3
 
         while iterations < self.max_iterations:
             iterations += 1
@@ -165,6 +167,30 @@ class Orchestrator:
                 run_result = RunResult(
                     success=False, stderr=str(exc), returncode=-1
                 )
+
+            # Track consecutive agent failures for early termination
+            if not run_result.success and run_result.returncode != 0:
+                consecutive_agent_failures += 1
+                if consecutive_agent_failures >= max_consecutive_agent_failures:
+                    self.logger.log(
+                        "agent_error_abort",
+                        phase=phase_name,
+                        iteration=iterations,
+                        consecutive_failures=consecutive_agent_failures,
+                        stderr=run_result.stderr[:500] if run_result.stderr else "",
+                    )
+                    # Advance through required states before returning
+                    self.state.advance_phase(phase_name, "GATE_CHECK")
+                    self.state.advance_phase(phase_name, "GATE_FAILED")
+                    self._save_state()
+                    return PhaseResult(
+                        phase_name=phase_name,
+                        gate_passed=False,
+                        iterations=iterations,
+                        gate_report={"overall_pass": False, "agent_error": True},
+                    )
+            else:
+                consecutive_agent_failures = 0
 
             # Advance to GATE_CHECK
             self.state.advance_phase(phase_name, "GATE_CHECK")

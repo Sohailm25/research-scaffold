@@ -191,6 +191,11 @@ Each gap has a severity, status, and description of what's needed to close it.
 **Was:** When gates failed, the orchestrator retried with the exact same prompt. The agent had no context about why previous iterations failed, what metrics were observed, or what thresholds were missed.
 **Fix:** After gate failure, the orchestrator now builds a `previous_failures` string containing each failed/skipped metric, its observed value, and the required threshold. This is passed as a template variable and rendered in the WORKFLOW.md under a "Previous Gate Failures" section. The agent can now see exactly what went wrong and adapt. 2 new tests.
 
+### G31: Orchestrator burns all iterations when agent cannot start (P0) -- FIXED
+**File:** `scaffold/orchestrator.py`
+**Was:** When the agent failed to start (e.g., "Credit balance is too low", CLI not found), the orchestrator treated each failed run the same as a successful run with missing metrics. It burned through all 20 iterations in ~40 seconds, each producing no result.json, each evaluating as all-SKIP. No distinction between "agent ran but produced no metrics" and "agent cannot start."
+**Fix:** Added consecutive agent failure tracking. If the agent returns `success=False` with non-zero returncode for `max_consecutive_agent_failures` (3) iterations in a row, the orchestrator logs an `agent_error_abort` event and stops early. The counter resets when an agent run succeeds. 3 new tests.
+
 ### G23: No budget/cost tracking
 **Severity:** P3
 **File:** `scaffold/config.py`, `scaffold/orchestrator.py`
