@@ -475,7 +475,14 @@ class TestLinearIntegration:
 
     def test_init_creates_linear_issue(self, tmp_path: Path, config: ExperimentConfig):
         """Linear issue is created and issue_id saved to .scaffold/linear.json."""
-        canned = {
+        canned_list = {
+            "data": {
+                "project": {
+                    "issues": {"nodes": []}
+                }
+            }
+        }
+        canned_create = {
             "data": {
                 "issueCreate": {
                     "success": True,
@@ -483,7 +490,7 @@ class TestLinearIntegration:
                 }
             }
         }
-        transport = _FakeTransport(responses=[canned])
+        transport = _FakeTransport(responses=[canned_list, canned_create])
         http_client = httpx.Client(transport=transport)
 
         from scaffold.linear import LinearClient
@@ -498,9 +505,9 @@ class TestLinearIntegration:
         data = json.loads(linear_json.read_text())
         assert data["issue_id"] == "issue-init-test-123"
 
-        # Verify the request was sent
-        assert len(transport.requests) == 1
-        body = json.loads(transport.requests[0].content)
+        # Verify requests: first list_experiments, then create
+        assert len(transport.requests) == 2
+        body = json.loads(transport.requests[1].content)
         assert body["variables"]["input"]["title"] == config.name
         assert body["variables"]["input"]["description"] == config.research_question
 

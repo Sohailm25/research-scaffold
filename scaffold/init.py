@@ -256,10 +256,18 @@ def init_experiment(
             if linear is None:
                 from scaffold.linear import LinearClient
                 linear = LinearClient()
-            issue_id = linear.create_experiment_issue(
-                title=experiment_name,
-                description=config.research_question,
-            )
+
+            issue_id = None
+            try:
+                issue_id = linear.find_experiment_issue(experiment_name)
+            except Exception:
+                pass
+
+            if issue_id is None:
+                issue_id = linear.create_experiment_issue(
+                    title=experiment_name,
+                    description=config.research_question,
+                )
             linear_json_path = exp_dir / ".scaffold" / "linear.json"
             linear_json_path.write_text(json.dumps({"issue_id": issue_id}) + "\n")
         except Exception:

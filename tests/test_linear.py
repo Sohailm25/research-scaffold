@@ -243,8 +243,20 @@ class TestAddPhaseComment:
         gate_report = {
             "overall_pass": True,
             "results": [
-                {"metric": "accuracy", "status": "PASS", "observed_value": 0.95},
-                {"metric": "latency", "status": "PASS", "observed_value": 120},
+                {
+                    "metric": "accuracy",
+                    "status": "PASS",
+                    "observed_value": 0.95,
+                    "threshold": 0.90,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "latency",
+                    "status": "PASS",
+                    "observed_value": 120,
+                    "threshold": 200,
+                    "comparator": "lte",
+                },
             ],
         }
         client.add_phase_comment("issue-42", "phase1_oracle", gate_report)
@@ -267,7 +279,13 @@ class TestAddPhaseComment:
         gate_report = {
             "overall_pass": False,
             "results": [
-                {"metric": "r_squared", "status": "FAIL", "observed_value": 0.3},
+                {
+                    "metric": "r_squared",
+                    "status": "FAIL",
+                    "observed_value": 0.3,
+                    "threshold": 0.5,
+                    "comparator": "gte",
+                },
             ],
         }
         client.add_phase_comment("issue-99", "phase2_routing", gate_report)
@@ -282,6 +300,267 @@ class TestAddPhaseComment:
         client, transport = _make_client(responses=[canned])
         with pytest.raises(LinearAPIError, match="comment"):
             client.add_phase_comment("issue-1", "phase1", {"overall_pass": True, "results": []})
+
+    def test_comment_includes_table_with_thresholds(self):
+        """Comment body contains a markdown table with Threshold column."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": True,
+            "results": [
+                {
+                    "metric": "pca_variance",
+                    "status": "PASS",
+                    "observed_value": 0.4767,
+                    "threshold": 0.40,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        client.add_phase_comment("issue-1", "pilot_single_model", gate_report)
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        # Table header
+        assert "| Gate |" in comment_body
+        assert "Threshold" in comment_body
+        assert "Observed" in comment_body
+        assert "Status" in comment_body
+        # Table row
+        assert "pca_variance" in comment_body
+        assert ">= 0.4" in comment_body
+        assert "0.4767" in comment_body
+
+    def test_pass_comment_format(self):
+        """PASS comments say 'PASSED' and include the table."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": True,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "PASS",
+                    "observed_value": 0.96,
+                    "threshold": 0.65,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "auroc",
+                    "status": "PASS",
+                    "observed_value": 0.80,
+                    "threshold": 0.70,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "loss",
+                    "status": "PASS",
+                    "observed_value": 0.01,
+                    "threshold": 0.05,
+                    "comparator": "lte",
+                },
+            ],
+        }
+        client.add_phase_comment(
+            "issue-1", "pilot_single_model", gate_report, iteration=1
+        )
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "PASSED" in comment_body
+        assert "All 3 gates passed" in comment_body
+        assert "| Gate |" in comment_body
+        assert "*Status: Awaiting human review before advancing.*" in comment_body
+
+    def test_fail_comment_shows_failure_count(self):
+        """FAIL comments show 'X of Y gates failed'."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": False,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "PASS",
+                    "observed_value": 0.96,
+                    "threshold": 0.65,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "auroc",
+                    "status": "FAIL",
+                    "observed_value": 0.43,
+                    "threshold": 0.70,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "f1",
+                    "status": "FAIL",
+                    "observed_value": 0.30,
+                    "threshold": 0.50,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        client.add_phase_comment(
+            "issue-1", "failure_prediction_validation", gate_report,
+            iteration=2, max_iterations=20,
+        )
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "**Result: FAIL**" in comment_body
+        assert "2 of 3 gates failed" in comment_body
+        assert "Orchestrator will retry" in comment_body
+
+    def test_all_skip_comment_format(self):
+        """All-SKIP results show 'NO METRICS' text."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": False,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "SKIP",
+                    "observed_value": None,
+                    "threshold": 0.65,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "auroc",
+                    "status": "SKIP",
+                    "observed_value": None,
+                    "threshold": 0.70,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "f1",
+                    "status": "SKIP",
+                    "observed_value": None,
+                    "threshold": 0.50,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        client.add_phase_comment(
+            "issue-1", "failure_prediction_validation", gate_report,
+            iteration=3, max_iterations=20,
+        )
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "**Result: NO METRICS**" in comment_body
+        assert "All 3 gates evaluated as SKIP" in comment_body
+        assert "agent did not produce any metrics" in comment_body
+
+    def test_comment_includes_iteration(self):
+        """Iteration context appears as 'Iteration 2/20'."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": False,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "FAIL",
+                    "observed_value": 0.50,
+                    "threshold": 0.65,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        client.add_phase_comment(
+            "issue-1", "phase1", gate_report,
+            iteration=2, max_iterations=20,
+        )
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "Iteration 2/20" in comment_body
+
+    def test_comment_without_iteration(self):
+        """When iteration is None, no iteration text appears."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": True,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "PASS",
+                    "observed_value": 0.96,
+                    "threshold": 0.65,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        client.add_phase_comment("issue-1", "phase1", gate_report)
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "Iteration" not in comment_body
+
+    def test_comparator_display(self):
+        """Comparator codes are displayed as symbols: gte->'>=', lte->'<=', etc."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": True,
+            "results": [
+                {
+                    "metric": "metric_a",
+                    "status": "PASS",
+                    "observed_value": 1.0,
+                    "threshold": 0.5,
+                    "comparator": "gte",
+                },
+                {
+                    "metric": "metric_b",
+                    "status": "PASS",
+                    "observed_value": 0.1,
+                    "threshold": 0.5,
+                    "comparator": "lte",
+                },
+                {
+                    "metric": "metric_c",
+                    "status": "PASS",
+                    "observed_value": 1.0,
+                    "threshold": 0.5,
+                    "comparator": "gt",
+                },
+                {
+                    "metric": "metric_d",
+                    "status": "PASS",
+                    "observed_value": 0.1,
+                    "threshold": 0.5,
+                    "comparator": "lt",
+                },
+                {
+                    "metric": "metric_e",
+                    "status": "PASS",
+                    "observed_value": 0.5,
+                    "threshold": 0.5,
+                    "comparator": "eq",
+                },
+            ],
+        }
+        client.add_phase_comment("issue-1", "phase1", gate_report)
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert ">= 0.5" in comment_body
+        assert "<= 0.5" in comment_body
+        assert "> 0.5" in comment_body
+        assert "< 0.5" in comment_body
+        assert "= 0.5" in comment_body
 
 
 # --- list_experiments ---
@@ -374,6 +653,67 @@ class TestListExperiments:
         client, transport = _make_client(responses=[canned])
         experiments = client.list_experiments()
         assert experiments[0]["description"] == ""
+
+
+# --- find_experiment_issue ---
+
+
+class TestFindExperimentIssue:
+    def test_find_experiment_issue_returns_id(self):
+        """Returns the issue ID when an issue with matching title exists."""
+        canned = {
+            "data": {
+                "project": {
+                    "issues": {
+                        "nodes": [
+                            {
+                                "id": "issue-1",
+                                "title": "Experiment Alpha",
+                                "description": "Test alpha",
+                                "state": {"name": "In Progress", "type": "started"},
+                                "createdAt": "2026-01-01T00:00:00Z",
+                                "updatedAt": "2026-01-02T00:00:00Z",
+                            },
+                            {
+                                "id": "issue-2",
+                                "title": "Experiment Beta",
+                                "description": "Test beta",
+                                "state": {"name": "Done", "type": "completed"},
+                                "createdAt": "2026-02-01T00:00:00Z",
+                                "updatedAt": "2026-02-05T00:00:00Z",
+                            },
+                        ]
+                    }
+                }
+            }
+        }
+        client, transport = _make_client(responses=[canned])
+        result = client.find_experiment_issue("Experiment Beta")
+        assert result == "issue-2"
+
+    def test_find_experiment_issue_returns_none(self):
+        """Returns None when no issue has the matching title."""
+        canned = {
+            "data": {
+                "project": {
+                    "issues": {
+                        "nodes": [
+                            {
+                                "id": "issue-1",
+                                "title": "Experiment Alpha",
+                                "description": "Test alpha",
+                                "state": {"name": "In Progress", "type": "started"},
+                                "createdAt": "2026-01-01T00:00:00Z",
+                                "updatedAt": "2026-01-02T00:00:00Z",
+                            },
+                        ]
+                    }
+                }
+            }
+        }
+        client, transport = _make_client(responses=[canned])
+        result = client.find_experiment_issue("Nonexistent Experiment")
+        assert result is None
 
 
 # --- Error handling ---

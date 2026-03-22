@@ -217,13 +217,22 @@ class Orchestrator:
                                 "metric": r.gate.metric,
                                 "status": r.status,
                                 "observed_value": r.observed_value,
+                                "threshold": r.gate.threshold,
+                                "comparator": r.gate.comparator,
                             }
                             for r in report.results
                         ],
                     }
-                    self._linear_client.add_phase_comment(
-                        self._linear_issue_id, phase_name, gate_report_dict
+                    all_skip = all(
+                        r["status"] == "SKIP"
+                        for r in gate_report_dict["results"]
                     )
+                    if not all_skip:
+                        self._linear_client.add_phase_comment(
+                            self._linear_issue_id, phase_name, gate_report_dict,
+                            iteration=iterations,
+                            max_iterations=self.max_iterations,
+                        )
                 except Exception:
                     pass
 

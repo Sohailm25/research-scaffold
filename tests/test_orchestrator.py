@@ -572,6 +572,51 @@ class TestOrchestratorLinearIntegration:
 
         assert len(transport.requests) == 0
 
+    def test_gate_report_includes_thresholds(self, tmp_path):
+        """Gate report dict passed to Linear includes threshold and comparator."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=passing_metrics, max_iterations=1
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Find the comment request (second request)
+        assert len(transport.requests) >= 2
+        comment_body = json.loads(transport.requests[1].content)
+        comment_text = comment_body["variables"]["input"]["body"]
+        # The comment should contain threshold info (rendered as part of the table)
+        # cross_entropy_delta_nats has threshold 0.01 comparator gte
+        assert ">= 0.01" in comment_text or "0.01" in comment_text
+
+    def test_skips_linear_comment_on_all_skip(self, tmp_path):
+        """No comment posted when all gates are SKIP (no useful info)."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment, canned_comment]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        # No metrics at all -> all gates SKIP
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics={}, max_iterations=1
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Only the status update should be posted, no comment
+        comment_requests = [
+            r for r in transport.requests
+            if "commentCreate" in json.loads(r.content).get("query", "")
+        ]
+        assert len(comment_requests) == 0
+
 
 # --- Inter-iteration Feedback ---
 

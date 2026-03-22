@@ -125,17 +125,80 @@ class LinearClient:
         if not data.get("issueUpdate", {}).get("success"):
             raise LinearAPIError(f"Failed to update issue {issue_id}")
 
+    _COMPARATOR_SYMBOLS = {
+        "gte": ">=",
+        "lte": "<=",
+        "gt": ">",
+        "lt": "<",
+        "eq": "=",
+    }
+
     def add_phase_comment(
-        self, issue_id: str, phase: str, gate_report: dict
+        self,
+        issue_id: str,
+        phase: str,
+        gate_report: dict,
+        iteration: int | None = None,
+        max_iterations: int | None = None,
     ) -> None:
         """Post phase gate results as a comment on the experiment issue."""
-        body = f"## Phase: {phase}\n\n"
-        body += f"**Overall:** {'PASS' if gate_report.get('overall_pass') else 'FAIL'}\n\n"
-        for result in gate_report.get("results", []):
-            body += (
-                f"- {result.get('metric', '?')}: {result.get('status', '?')} "
-                f"(observed={result.get('observed_value', '?')})\n"
-            )
+        results = gate_report.get("results", [])
+        overall_pass = gate_report.get("overall_pass", False)
+        total = len(results)
+        all_skip = total > 0 and all(r.get("status") == "SKIP" for r in results)
+        fail_count = sum(1 for r in results if r.get("status") == "FAIL")
+
+        # Header line
+        if overall_pass:
+            iter_suffix = f" (iteration {iteration})" if iteration is not None else ""
+            body = f"## Phase: {phase} -- PASSED{iter_suffix}\n\n"
+        elif all_skip:
+            iter_suffix = ""
+            if iteration is not None and max_iterations is not None:
+                iter_suffix = f" -- Iteration {iteration}/{max_iterations}"
+            elif iteration is not None:
+                iter_suffix = f" -- Iteration {iteration}"
+            body = f"## Phase: {phase}{iter_suffix}\n\n"
+        else:
+            iter_suffix = ""
+            if iteration is not None and max_iterations is not None:
+                iter_suffix = f" -- Iteration {iteration}/{max_iterations}"
+            elif iteration is not None:
+                iter_suffix = f" -- Iteration {iteration}"
+            body = f"## Phase: {phase}{iter_suffix}\n\n"
+
+        # Result summary
+        if overall_pass:
+            body += f"All {total} gates passed.\n\n"
+        elif all_skip:
+            body += f"**Result: NO METRICS** (agent produced no result.json)\n\n"
+            body += f"All {total} gates evaluated as SKIP -- the agent did not produce any metrics this iteration.\n\n"
+        else:
+            body += f"**Result: FAIL** ({fail_count} of {total} gates failed)\n\n"
+
+        # Table (only for non-all-skip scenarios)
+        if not all_skip and total > 0:
+            body += "| Gate | Threshold | Observed | Status |\n"
+            body += "|------|-----------|----------|--------|\n"
+            for r in results:
+                metric = r.get("metric", "?")
+                status = r.get("status", "?")
+                observed = r.get("observed_value")
+                threshold = r.get("threshold")
+                comparator = r.get("comparator", "")
+                symbol = self._COMPARATOR_SYMBOLS.get(comparator, comparator)
+                threshold_str = f"{symbol} {threshold}" if threshold is not None else "?"
+                observed_str = str(observed) if observed is not None else "N/A"
+                body += f"| {metric} | {threshold_str} | {observed_str} | {status} |\n"
+            body += "\n"
+
+        # Footer
+        if overall_pass:
+            body += "*Status: Awaiting human review before advancing.*\n"
+        elif all_skip:
+            body += "*Next: Orchestrator will retry. Aborts after 3 consecutive agent failures.*\n"
+        else:
+            body += "*Next: Orchestrator will retry with feedback about what failed.*\n"
 
         mutation = """
         mutation CreateComment($input: CommentCreateInput!) {
@@ -187,3 +250,11 @@ class LinearClient:
             }
             for issue in issues
         ]
+
+    def find_experiment_issue(self, title: str) -> str | None:
+        """Find existing experiment issue by title. Returns issue ID or None."""
+        experiments = self.list_experiments()
+        for exp in experiments:
+            if exp["title"] == title:
+                return exp["id"]
+        return None
