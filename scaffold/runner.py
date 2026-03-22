@@ -81,19 +81,28 @@ class ScriptBackend:
 class ClaudeCodeBackend:
     """Launches claude --print with a rendered prompt."""
 
-    def __init__(self, model: str = "opus"):
+    def __init__(self, model: str = "opus", default_timeout: int = 14400):
         self.model = model
+        self.default_timeout = default_timeout
 
     def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
-        """Run claude --print with the given prompt."""
+        """Run claude --print with the given prompt.
+
+        Uses --dangerously-skip-permissions so the agent can use tools
+        (Read, Write, Bash, etc.) in non-interactive mode.
+        """
         try:
             proc = subprocess.run(
-                ["claude", "--print", "--model", self.model],
+                [
+                    "claude", "--print",
+                    "--model", self.model,
+                    "--dangerously-skip-permissions",
+                ],
                 input=prompt,
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                timeout=timeout,
+                timeout=timeout if timeout is not None else self.default_timeout,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
             stderr = ""
@@ -108,8 +117,22 @@ class ClaudeCodeBackend:
                 returncode=-1,
             )
 
+        metrics: dict = {}
+        artifacts: list[str] = []
+
+        result_json_path = cwd / "result.json"
+        if result_json_path.exists():
+            try:
+                data = json.loads(result_json_path.read_text())
+                metrics = data.get("metrics", {})
+                artifacts = data.get("artifacts", [])
+            except (json.JSONDecodeError, KeyError):
+                pass
+
         return RunResult(
             success=proc.returncode == 0,
+            metrics=metrics,
+            artifacts=artifacts,
             stdout=proc.stdout,
             stderr=proc.stderr,
             returncode=proc.returncode,
@@ -140,6 +163,17 @@ class AgentRunner:
         If pre_run hook fails, skip dispatch and return failure RunResult.
         """
         hooks = hooks or {}
+
+        # Normalize hook key names (accept both before_run/after_run and pre_run/post_run)
+        normalized: dict[str, str] = {}
+        for k, v in hooks.items():
+            if k == "before_run":
+                normalized["pre_run"] = v
+            elif k == "after_run":
+                normalized["post_run"] = v
+            else:
+                normalized[k] = v
+        hooks = normalized
 
         # Run pre_run hook
         if "pre_run" in hooks and self.hook_runner:

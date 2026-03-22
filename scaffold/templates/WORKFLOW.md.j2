@@ -21,6 +21,15 @@ You are an autonomous research agent operating within the `{{ experiment_name }}
 - **Phase:** {{ phase }}
 - **Lane:** {{ lane }}
 - **Task:** {{ task }}
+- **Iteration:** {{ iteration }} of {{ max_iterations }}
+{% if previous_failures %}
+
+### Previous Gate Failures
+
+The previous iteration failed the following gates. Address these issues before re-running:
+
+{{ previous_failures }}
+{% endif %}
 {% endraw %}
 
 ## Context Reading List
@@ -58,18 +67,36 @@ Execute the dispatched task for phase `{{ phase }}`, lane `{{ lane }}`:
 
 ### Phase Gates
 
-Check `history/PREREG.md` for the gates that apply to phase `{{ phase }}`.
-All gates must be evaluated and reported before advancing.
+The following gates must be met for this phase to advance:
+
+{{ gates_display }}
+
+### Result Reporting
+
+After running experiments, you MUST write a `result.json` file in the experiment root directory with your metrics. Format:
+
+```json
+{
+  "metrics": {
+    "metric_name": numeric_value
+  },
+  "artifacts": ["path/to/artifact1.png", "path/to/data.csv"],
+  "status": "success"
+}
+```
+
+The orchestrator evaluates gates mechanically from `result.json`. If a gate metric is missing, the gate cannot pass. Include all metrics listed in the Phase Gates section above.
 
 ### Completion
 
 When the task is complete:
 
-1. Update `SCRATCHPAD.md` with post-run results.
-2. Update `CURRENT_STATE.md` with new status.
-3. Register any artifacts in `results/RESULTS_INDEX.md`.
-4. Log non-obvious decisions in `DECISIONS.md`.
-5. If the result changes your confidence in any hypothesis, note it in `THOUGHT_LOG.md`.
+1. Write `result.json` with all gate metrics.
+2. Update `SCRATCHPAD.md` with post-run results.
+3. Update `CURRENT_STATE.md` with new status.
+4. Register any artifacts in `results/RESULTS_INDEX.md`.
+5. Log non-obvious decisions in `DECISIONS.md`.
+6. If the result changes your confidence in any hypothesis, note it in `THOUGHT_LOG.md`.
 {% endraw %}
 
 ## Session Completion Checklist

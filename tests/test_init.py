@@ -5,6 +5,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -447,3 +448,120 @@ class TestReferencesContent:
     def test_has_urls_section(self, experiment_dir: Path):
         content = (experiment_dir / "background-work" / "REFERENCES.md").read_text()
         assert "## URLs" in content
+
+
+# --- Linear Integration ---
+
+
+class _FakeTransport(httpx.BaseTransport):
+    """Records requests and returns canned responses for Linear API tests."""
+
+    def __init__(self, responses=None):
+        self.requests: list[httpx.Request] = []
+        self.responses = responses or []
+        self._idx = 0
+
+    def handle_request(self, request):
+        self.requests.append(request)
+        if self._idx < len(self.responses):
+            resp = self.responses[self._idx]
+            self._idx += 1
+            return httpx.Response(200, json=resp)
+        return httpx.Response(200, json={"data": {}})
+
+
+class TestLinearIntegration:
+    """init_experiment creates a Linear issue when skip_external=False."""
+
+    def test_init_creates_linear_issue(self, tmp_path: Path, config: ExperimentConfig):
+        """Linear issue is created and issue_id saved to .scaffold/linear.json."""
+        canned = {
+            "data": {
+                "issueCreate": {
+                    "success": True,
+                    "issue": {"id": "issue-init-test-123"},
+                }
+            }
+        }
+        transport = _FakeTransport(responses=[canned])
+        http_client = httpx.Client(transport=transport)
+
+        from scaffold.linear import LinearClient
+
+        result = init_experiment(
+            config, root=tmp_path, skip_external=False,
+            _linear_client=LinearClient(api_key="test-key", client=http_client),
+        )
+
+        linear_json = result / ".scaffold" / "linear.json"
+        assert linear_json.is_file()
+        data = json.loads(linear_json.read_text())
+        assert data["issue_id"] == "issue-init-test-123"
+
+        # Verify the request was sent
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert body["variables"]["input"]["title"] == config.name
+        assert body["variables"]["input"]["description"] == config.research_question
+
+    def test_init_linear_failure_graceful(self, tmp_path: Path, config: ExperimentConfig):
+        """Linear failure does not prevent experiment initialization."""
+        # Transport that returns an error
+        transport = _FakeTransport(responses=[{"errors": [{"message": "Auth failed"}]}])
+        http_client = httpx.Client(transport=transport)
+
+        from scaffold.linear import LinearClient
+
+        result = init_experiment(
+            config, root=tmp_path, skip_external=False,
+            _linear_client=LinearClient(api_key="bad-key", client=http_client),
+        )
+
+        # Experiment dir should still exist and be valid
+        assert result.is_dir()
+        assert (result / "AGENTS.md").is_file()
+        assert (result / ".scaffold" / "state.json").is_file()
+
+        # linear.json should NOT exist since it failed
+        linear_json = result / ".scaffold" / "linear.json"
+        assert not linear_json.exists()
+
+    def test_init_skips_linear_when_skip_external(self, tmp_path: Path, config: ExperimentConfig):
+        """skip_external=True skips Linear issue creation (no linear.json)."""
+        result = init_experiment(config, root=tmp_path, skip_external=True)
+
+        linear_json = result / ".scaffold" / "linear.json"
+        assert not linear_json.exists()
+
+
+# --- Git Init ---
+
+
+class TestGitInit:
+    """init_experiment runs git init when skip_external=False."""
+
+    def test_init_runs_git_init(self, tmp_path: Path, config: ExperimentConfig):
+        """When skip_external=False, experiment dir should have .git/ directory."""
+        exp_dir = init_experiment(config, root=tmp_path, skip_external=False)
+        assert (exp_dir / ".git").is_dir(), "Expected .git directory when skip_external=False"
+
+    def test_init_has_initial_commit(self, tmp_path: Path, config: ExperimentConfig):
+        """When skip_external=False, the repo should have exactly one commit."""
+        import subprocess
+
+        exp_dir = init_experiment(config, root=tmp_path, skip_external=False)
+        result = subprocess.run(
+            ["git", "log", "--oneline"],
+            cwd=exp_dir,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        lines = result.stdout.strip().splitlines()
+        assert len(lines) == 1
+        assert "Initialize experiment" in lines[0]
+
+    def test_init_no_git_when_skip_external(self, tmp_path: Path, config: ExperimentConfig):
+        """When skip_external=True, no .git directory should be created."""
+        exp_dir = init_experiment(config, root=tmp_path, skip_external=True)
+        assert not (exp_dir / ".git").exists(), "Expected no .git directory when skip_external=True"

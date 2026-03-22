@@ -38,10 +38,13 @@ class Orchestrator:
         experiment_dir: Path,
         runner: AgentRunner,
         max_iterations: int = 20,
+        _linear_client: object | None = None,
+        default_timeout: int = 14400,
     ):
         self.experiment_dir = experiment_dir
         self.runner = runner
         self.max_iterations = max_iterations
+        self.default_timeout = default_timeout
 
         # Load config and state
         self.config = load_config(experiment_dir / "configs" / "experiment.yaml")
@@ -56,6 +59,20 @@ class Orchestrator:
             log_dir=experiment_dir / "sessions" / "logs",
             session_id=f"orchestrator-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}",
         )
+
+        # Load Linear issue ID if available
+        self._linear_issue_id = None
+        self._linear_client = _linear_client
+        linear_json = experiment_dir / ".scaffold" / "linear.json"
+        if linear_json.exists():
+            try:
+                data = json.loads(linear_json.read_text())
+                self._linear_issue_id = data.get("issue_id")
+                if self._linear_client is None:
+                    from scaffold.linear import LinearClient
+                    self._linear_client = LinearClient()
+            except Exception:
+                pass
 
     def run_phase(self, phase_name: str) -> PhaseResult:
         """Execute a single phase with iterative gate-check loop.
@@ -83,6 +100,7 @@ class Orchestrator:
         workflow = load_workflow(workflow_path) if workflow_path.exists() else None
 
         iterations = 0
+        previous_failures = ""
 
         while iterations < self.max_iterations:
             iterations += 1
@@ -97,23 +115,48 @@ class Orchestrator:
 
             self._save_state()
 
+            # Update Linear status
+            if iterations == 1 and self._linear_client and self._linear_issue_id:
+                try:
+                    self._linear_client.update_experiment_status(
+                        self._linear_issue_id, "In Progress"
+                    )
+                except Exception:
+                    pass
+
             # Build prompt
             prompt = phase_name
             if workflow is not None:
+                # Build gates display for the agent
+                gates_lines = []
+                for g in phase_config.gates:
+                    gates_lines.append(
+                        f"- `{g.metric}` {g.comparator} {g.threshold}"
+                    )
+                gates_display = "\n".join(gates_lines) if gates_lines else "No gates defined for this phase."
+
                 context = {
                     "phase": phase_name,
                     "lane": phase_config.name,
                     "task": phase_config.description,
+                    "gates_display": gates_display,
+                    "iteration": iterations,
+                    "max_iterations": self.max_iterations,
+                    "previous_failures": previous_failures,
                 }
                 try:
                     prompt = render_prompt(workflow, context)
                 except Exception:
                     prompt = phase_name
 
+            # Extract hooks from workflow
+            workflow_hooks = workflow.hooks if workflow is not None else {}
+
             # Dispatch to runner
             try:
                 run_result = self.runner.execute(
-                    prompt, cwd=self.experiment_dir
+                    prompt, cwd=self.experiment_dir, hooks=workflow_hooks,
+                    timeout=self.default_timeout,
                 )
             except Exception as exc:
                 self.logger.log(
@@ -128,7 +171,7 @@ class Orchestrator:
             self._save_state()
 
             # Collect metrics and evaluate gates
-            metrics = self._collect_metrics(phase_name)
+            metrics = self._collect_metrics(phase_name, run_result)
             report = evaluate_phase_gates(phase_config, metrics)
 
             self.logger.log(
@@ -137,6 +180,26 @@ class Orchestrator:
                 overall_pass=report.overall_pass,
                 iteration=iterations,
             )
+
+            # Post gate report to Linear
+            if self._linear_client and self._linear_issue_id:
+                try:
+                    gate_report_dict = {
+                        "overall_pass": report.overall_pass,
+                        "results": [
+                            {
+                                "metric": r.gate.metric,
+                                "status": r.status,
+                                "observed_value": r.observed_value,
+                            }
+                            for r in report.results
+                        ],
+                    }
+                    self._linear_client.add_phase_comment(
+                        self._linear_issue_id, phase_name, gate_report_dict
+                    )
+                except Exception:
+                    pass
 
             if report.overall_pass:
                 # Gates passed
@@ -188,6 +251,24 @@ class Orchestrator:
                 for f in self.experiment_dir.rglob("result.json"):
                     f.unlink()
 
+                # Build feedback for next iteration so the agent knows what failed
+                failure_lines = []
+                for r in report.results:
+                    if r.status == "FAIL":
+                        failure_lines.append(
+                            f"- {r.gate.metric}: observed={r.observed_value}, "
+                            f"required {r.gate.comparator} {r.gate.threshold}"
+                        )
+                    elif r.status == "SKIP":
+                        failure_lines.append(
+                            f"- {r.gate.metric}: MISSING (required {r.gate.comparator} {r.gate.threshold})"
+                        )
+                if failure_lines:
+                    previous_failures = (
+                        f"Iteration {iterations} gate failures:\n"
+                        + "\n".join(failure_lines)
+                    )
+
         # Exhausted max_iterations
         self.logger.log(
             "phase_completed",
@@ -230,6 +311,20 @@ class Orchestrator:
             if result.requires_human_review or not result.gate_passed:
                 break
 
+        # Update Linear to Done if all phases completed
+        if self._linear_client and self._linear_issue_id:
+            all_done = all(
+                self.state._find_phase(p.name).status == "COMPLETED"
+                for p in self.config.phases
+            )
+            if all_done:
+                try:
+                    self._linear_client.update_experiment_status(
+                        self._linear_issue_id, "Done"
+                    )
+                except Exception:
+                    pass
+
         return results
 
     def check_gates(self, phase_name: str, metrics: dict) -> PhaseGateReport:
@@ -248,9 +343,17 @@ class Orchestrator:
         """Persist state to .scaffold/state.json."""
         self.state.save(self.experiment_dir / ".scaffold" / "state.json")
 
-    def _collect_metrics(self, phase_name: str) -> dict:
-        """Collect metrics from result.json files in results directories."""
+    def _collect_metrics(self, phase_name: str, run_result: RunResult | None = None) -> dict:
+        """Collect metrics from result.json files and RunResult.
+
+        Searches three sources (later sources override earlier):
+        1. result.json files in results/ subdirectories
+        2. result.json in the experiment root directory
+        3. RunResult.metrics from the runner (if provided)
+        """
         metrics: dict = {}
+
+        # 1. Search results/ subdirectories
         results_dir = self.experiment_dir / "results"
         for result_file in results_dir.rglob("result.json"):
             try:
@@ -259,4 +362,19 @@ class Orchestrator:
                     metrics.update(data["metrics"])
             except (json.JSONDecodeError, OSError):
                 pass
+
+        # 2. Check experiment root
+        root_result = self.experiment_dir / "result.json"
+        if root_result.exists():
+            try:
+                data = json.loads(root_result.read_text())
+                if "metrics" in data:
+                    metrics.update(data["metrics"])
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # 3. Merge RunResult metrics (highest priority)
+        if run_result is not None and run_result.metrics:
+            metrics.update(run_result.metrics)
+
         return metrics

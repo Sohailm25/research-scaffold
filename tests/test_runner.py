@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -124,7 +125,7 @@ class TestScriptBackend:
 
 
 class TestClaudeCodeBackend:
-    """Tests for ClaudeCodeBackend initialization."""
+    """Tests for ClaudeCodeBackend initialization and result.json parsing."""
 
     def test_claude_backend_init(self):
         """ClaudeCodeBackend stores model attribute."""
@@ -135,6 +136,57 @@ class TestClaudeCodeBackend:
         """ClaudeCodeBackend defaults to opus model."""
         backend = ClaudeCodeBackend()
         assert backend.model == "opus"
+
+    def test_claude_backend_reads_result_json(self, tmp_path, monkeypatch):
+        """ClaudeCodeBackend parses result.json from cwd after execution."""
+        result_data = {"metrics": {"bleu": 0.42}, "artifacts": ["summary.txt"]}
+        (tmp_path / "result.json").write_text(json.dumps(result_data))
+
+        fake_proc = subprocess.CompletedProcess(
+            args=["claude", "--print", "--model", "opus"],
+            returncode=0,
+            stdout="agent output",
+            stderr="",
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake_proc)
+
+        backend = ClaudeCodeBackend()
+        result = backend.run("do something", cwd=tmp_path)
+
+        assert result.success is True
+        assert result.metrics == {"bleu": 0.42}
+        assert result.artifacts == ["summary.txt"]
+        assert result.stdout == "agent output"
+
+    def test_claude_backend_no_result_json(self, tmp_path, monkeypatch):
+        """Without result.json, ClaudeCodeBackend returns empty metrics/artifacts."""
+        fake_proc = subprocess.CompletedProcess(
+            args=["claude"], returncode=0, stdout="output", stderr="",
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake_proc)
+
+        backend = ClaudeCodeBackend()
+        result = backend.run("prompt", cwd=tmp_path)
+
+        assert result.success is True
+        assert result.metrics == {}
+        assert result.artifacts == []
+
+    def test_claude_backend_malformed_result_json(self, tmp_path, monkeypatch):
+        """Malformed result.json is ignored gracefully."""
+        (tmp_path / "result.json").write_text("not valid json {{{")
+
+        fake_proc = subprocess.CompletedProcess(
+            args=["claude"], returncode=0, stdout="ok", stderr="",
+        )
+        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake_proc)
+
+        backend = ClaudeCodeBackend()
+        result = backend.run("prompt", cwd=tmp_path)
+
+        assert result.success is True
+        assert result.metrics == {}
+        assert result.artifacts == []
 
 
 class TestAgentRunner:
@@ -198,9 +250,124 @@ class TestAgentRunner:
         assert result.success is False
         assert len(backend.calls) == 0
 
+    def test_execute_normalizes_before_run_key(self, tmp_path):
+        """before_run hook key is normalized to pre_run and fires correctly."""
+        marker = tmp_path / "before_ran.txt"
+        backend = _FakeBackend()
+        hook_runner = HookRunner(cwd=tmp_path)
+        runner = AgentRunner(backend=backend, hook_runner=hook_runner)
+
+        hooks = {"before_run": f"touch {marker}"}
+        runner.execute("prompt", cwd=tmp_path, hooks=hooks)
+        assert marker.exists(), "before_run hook should fire as pre_run"
+        assert len(backend.calls) == 1
+
+    def test_execute_normalizes_after_run_key(self, tmp_path):
+        """after_run hook key is normalized to post_run and fires correctly."""
+        marker = tmp_path / "after_ran.txt"
+        backend = _FakeBackend()
+        hook_runner = HookRunner(cwd=tmp_path)
+        runner = AgentRunner(backend=backend, hook_runner=hook_runner)
+
+        hooks = {"after_run": f"touch {marker}"}
+        runner.execute("prompt", cwd=tmp_path, hooks=hooks)
+        assert marker.exists(), "after_run hook should fire as post_run"
+
+    def test_execute_normalizes_both_hook_keys(self, tmp_path):
+        """Both before_run and after_run keys are normalized and fire."""
+        pre_marker = tmp_path / "pre.txt"
+        post_marker = tmp_path / "post.txt"
+        backend = _FakeBackend()
+        hook_runner = HookRunner(cwd=tmp_path)
+        runner = AgentRunner(backend=backend, hook_runner=hook_runner)
+
+        hooks = {
+            "before_run": f"touch {pre_marker}",
+            "after_run": f"touch {post_marker}",
+        }
+        runner.execute("prompt", cwd=tmp_path, hooks=hooks)
+        assert pre_marker.exists(), "before_run should fire"
+        assert post_marker.exists(), "after_run should fire"
+
+    def test_execute_before_run_failure_skips_dispatch(self, tmp_path):
+        """If before_run (normalized to pre_run) hook fails, backend is not called."""
+        backend = _FakeBackend()
+        hook_runner = HookRunner(cwd=tmp_path)
+        runner = AgentRunner(backend=backend, hook_runner=hook_runner)
+
+        hooks = {"before_run": "exit 1"}
+        result = runner.execute("prompt", cwd=tmp_path, hooks=hooks)
+        assert result.success is False
+        assert len(backend.calls) == 0
+
     def test_execute_passes_timeout(self, tmp_path):
         """Timeout is forwarded to backend.run."""
         backend = _FakeBackend()
         runner = AgentRunner(backend=backend)
         runner.execute("prompt", cwd=tmp_path, timeout=30)
         assert backend.calls[0]["timeout"] == 30
+
+
+class TestClaudeCodeBackendDefaultTimeout:
+    """Tests for ClaudeCodeBackend default timeout behavior."""
+
+    def test_default_timeout_attribute(self):
+        """ClaudeCodeBackend has default_timeout of 14400 seconds (4 hours)."""
+        backend = ClaudeCodeBackend()
+        assert backend.default_timeout == 14400
+
+    def test_custom_default_timeout(self):
+        """ClaudeCodeBackend accepts a custom default_timeout."""
+        backend = ClaudeCodeBackend(default_timeout=7200)
+        assert backend.default_timeout == 7200
+
+    def test_run_uses_default_timeout_when_none(self, tmp_path, monkeypatch):
+        """When timeout=None, subprocess.run receives default_timeout."""
+        captured_kwargs = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        backend = ClaudeCodeBackend(default_timeout=3600)
+        backend.run("prompt", cwd=tmp_path)
+
+        assert captured_kwargs["timeout"] == 3600
+
+    def test_run_uses_default_timeout_when_not_passed(self, tmp_path, monkeypatch):
+        """Default timeout is used when run() called without timeout argument."""
+        captured_kwargs = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        backend = ClaudeCodeBackend()
+        backend.run("prompt", cwd=tmp_path)
+
+        assert captured_kwargs["timeout"] == 14400
+
+    def test_explicit_timeout_overrides_default(self, tmp_path, monkeypatch):
+        """Explicit timeout argument overrides default_timeout."""
+        captured_kwargs = {}
+
+        def fake_run(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok", stderr="",
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        backend = ClaudeCodeBackend(default_timeout=14400)
+        backend.run("prompt", cwd=tmp_path, timeout=600)
+
+        assert captured_kwargs["timeout"] == 600

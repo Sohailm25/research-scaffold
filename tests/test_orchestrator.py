@@ -6,12 +6,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
+
 from scaffold.config import load_config
 from scaffold.gates import PhaseGateReport
 from scaffold.init import init_experiment
 from scaffold.orchestrator import Orchestrator, PhaseResult
 from scaffold.runner import AgentRunner, RunResult
 from scaffold.state import ExperimentState
+from scaffold.workflow import WorkflowConfig
 
 _FIXTURE_CONFIG = Path(__file__).parent / "fixtures" / "minimal_config.yaml"
 
@@ -189,14 +192,14 @@ class TestCheckGates:
         assert len(report.failures) > 0
 
     def test_check_gates_skip(self, tmp_path):
-        """Missing metrics produce SKIP results (not failure)."""
+        """All metrics missing (all SKIP) means overall fail -- no work was done."""
         exp_dir = _create_experiment(tmp_path)
         orch, _ = _make_orchestrator(exp_dir)
 
         metrics = {}  # No metrics at all
         report = orch.check_gates("phase1_oracle_alpha", metrics)
-        # SKIP does not cause failure per the gate evaluation logic
-        assert report.overall_pass is True
+        # All-SKIP = fail (prevents phases advancing with zero experimental work)
+        assert report.overall_pass is False
         assert all(r.status == "SKIP" for r in report.results)
 
 
@@ -334,3 +337,396 @@ class TestRunAll:
         human_review_results = [r for r in results if r.requires_human_review]
         assert len(human_review_results) == 1
         assert human_review_results[0].phase_name == "phase2_pattern_analysis"
+
+
+class _RecordingRunner(AgentRunner):
+    """AgentRunner subclass that records hooks passed to execute()."""
+
+    def __init__(self, backend):
+        super().__init__(backend=backend)
+        self.execute_calls: list[dict] = []
+
+    def execute(self, prompt_or_script, cwd, hooks=None, timeout=None):
+        self.execute_calls.append({"hooks": hooks, "timeout": timeout})
+        return super().execute(prompt_or_script, cwd, hooks=hooks, timeout=timeout)
+
+
+class TestOrchestratorPassesHooks:
+    """Tests that the orchestrator passes workflow hooks to the runner."""
+
+    def test_orchestrator_passes_workflow_hooks(self, tmp_path):
+        """Workflow hooks from WORKFLOW.md are passed to runner.execute()."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Write a WORKFLOW.md with hooks in the experiment directory
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks:\n  pre_run: echo pre\n  post_run: echo post\n---\n\nPrompt text\n"
+        )
+
+        backend = _FakeBackend(
+            metrics={"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        )
+        recording_runner = _RecordingRunner(backend=backend)
+        orchestrator = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=recording_runner,
+            max_iterations=1,
+        )
+
+        orchestrator.run_phase("phase1_oracle_alpha")
+
+        # Verify hooks were passed to the runner
+        assert len(recording_runner.execute_calls) >= 1
+        passed_hooks = recording_runner.execute_calls[0]["hooks"]
+        assert passed_hooks is not None, "Hooks must be passed to runner.execute()"
+        assert "pre_run" in passed_hooks
+        assert "post_run" in passed_hooks
+
+    def test_orchestrator_no_workflow_no_hooks(self, tmp_path):
+        """Without WORKFLOW.md, hooks default to empty dict (no crash)."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Remove WORKFLOW.md if it exists
+        workflow_md = exp_dir / "WORKFLOW.md"
+        if workflow_md.exists():
+            workflow_md.unlink()
+
+        backend = _FakeBackend(
+            metrics={"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        )
+        recording_runner = _RecordingRunner(backend=backend)
+        orchestrator = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=recording_runner,
+            max_iterations=1,
+        )
+
+        orchestrator.run_phase("phase1_oracle_alpha")
+
+        # Verify hooks are empty dict or None (no crash)
+        assert len(recording_runner.execute_calls) >= 1
+        passed_hooks = recording_runner.execute_calls[0]["hooks"]
+        assert passed_hooks is not None
+        assert passed_hooks == {}
+
+
+# --- Linear Integration ---
+
+
+class _FakeLinearTransport(httpx.BaseTransport):
+    """Records requests and returns canned responses for Linear API tests."""
+
+    def __init__(self, responses=None):
+        self.requests: list[httpx.Request] = []
+        self.responses = responses or []
+        self._idx = 0
+
+    def handle_request(self, request):
+        self.requests.append(request)
+        if self._idx < len(self.responses):
+            resp = self.responses[self._idx]
+            self._idx += 1
+            return httpx.Response(200, json=resp)
+        return httpx.Response(200, json={"data": {}})
+
+
+def _create_experiment_with_linear(tmp_path: Path, transport: _FakeLinearTransport) -> Path:
+    """Create experiment directory with .scaffold/linear.json pre-populated."""
+    exp_dir = _create_experiment(tmp_path)
+    linear_data = {"issue_id": "issue-orch-test-456"}
+    (exp_dir / ".scaffold" / "linear.json").write_text(
+        json.dumps(linear_data) + "\n"
+    )
+    return exp_dir
+
+
+def _make_orchestrator_with_linear(
+    experiment_dir: Path,
+    transport: _FakeLinearTransport,
+    metrics: dict | None = None,
+    success: bool = True,
+    max_iterations: int = 3,
+) -> tuple[Orchestrator, _FakeBackend]:
+    """Create an Orchestrator with a FakeBackend and injected LinearClient."""
+    from scaffold.linear import LinearClient
+
+    backend = _FakeBackend(metrics=metrics, success=success)
+    runner = AgentRunner(backend=backend)
+    http_client = httpx.Client(transport=transport)
+    linear_client = LinearClient(api_key="test-key", client=http_client)
+    orchestrator = Orchestrator(
+        experiment_dir=experiment_dir,
+        runner=runner,
+        max_iterations=max_iterations,
+        _linear_client=linear_client,
+    )
+    return orchestrator, backend
+
+
+class TestOrchestratorLinearIntegration:
+    """Tests for Linear status updates and gate comments during orchestration."""
+
+    def test_updates_linear_on_phase_start(self, tmp_path):
+        """Orchestrator updates Linear to 'In Progress' when phase starts."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=passing_metrics, max_iterations=1
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # First request should be the "In Progress" status update
+        assert len(transport.requests) >= 1
+        first_body = json.loads(transport.requests[0].content)
+        assert "issueUpdate" in first_body["query"]
+        assert first_body["variables"]["id"] == "issue-orch-test-456"
+
+    def test_posts_gate_comment_after_evaluation(self, tmp_path):
+        """Orchestrator posts gate report as comment after gate evaluation."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=passing_metrics, max_iterations=1
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Second request should be the comment
+        assert len(transport.requests) >= 2
+        comment_body = json.loads(transport.requests[1].content)
+        assert "commentCreate" in comment_body["query"]
+        comment_text = comment_body["variables"]["input"]["body"]
+        assert "phase1_oracle_alpha" in comment_text
+        assert "PASS" in comment_text
+
+    def test_updates_linear_done_on_all_complete(self, tmp_path):
+        """Orchestrator updates Linear to 'Done' when all phases complete via run_all."""
+        # phase2 has requires_human_review=True so it gets HUMAN_REVIEW, not COMPLETED.
+        # With minimal config, "all_done" won't be True. We verify the In Progress updates happen.
+        canned = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned, canned_comment, canned, canned_comment, canned]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        all_metrics = {
+            "cross_entropy_delta_nats": 0.5,
+            "p_value": 0.001,
+            "silhouette_score": 0.5,
+        }
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=all_metrics, max_iterations=1
+        )
+
+        orch.run_all(auto=True)
+
+        # At least two "In Progress" updates (one per phase)
+        update_requests = [
+            r for r in transport.requests
+            if "issueUpdate" in json.loads(r.content).get("query", "")
+        ]
+        assert len(update_requests) >= 2
+
+    def test_linear_failure_does_not_block_phase(self, tmp_path):
+        """Linear API errors do not prevent phase execution."""
+        transport = _FakeLinearTransport(
+            responses=[
+                {"errors": [{"message": "Auth failed"}]},
+                {"errors": [{"message": "Auth failed"}]},
+            ]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=passing_metrics, max_iterations=1
+        )
+
+        # Phase should still complete successfully despite Linear failures
+        result = orch.run_phase("phase1_oracle_alpha")
+        assert result.gate_passed is True
+
+        state = ExperimentState.load(exp_dir / ".scaffold" / "state.json")
+        phase = state._find_phase("phase1_oracle_alpha")
+        assert phase.status == "COMPLETED"
+
+    def test_no_linear_json_means_no_linear_calls(self, tmp_path):
+        """Without .scaffold/linear.json, no Linear API calls are made."""
+        transport = _FakeLinearTransport()
+        exp_dir = _create_experiment(tmp_path)  # No linear.json
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator(exp_dir, metrics=passing_metrics)
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        assert len(transport.requests) == 0
+
+
+# --- Inter-iteration Feedback ---
+
+
+class _SequentialBackend:
+    """Backend that returns different metrics on each call.
+
+    Takes a list of metric dicts; call N uses metrics_sequence[N].
+    Falls back to the last entry if more calls than entries.
+    """
+
+    def __init__(self, metrics_sequence: list[dict]):
+        self.metrics_sequence = metrics_sequence
+        self.calls: list[dict] = []
+
+    def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
+        call_idx = len(self.calls)
+        self.calls.append({"prompt": prompt, "cwd": str(cwd), "timeout": timeout})
+
+        # Pick metrics for this iteration
+        if call_idx < len(self.metrics_sequence):
+            metrics = self.metrics_sequence[call_idx]
+        else:
+            metrics = self.metrics_sequence[-1]
+
+        # Write result.json so orchestrator's _collect_metrics picks it up
+        results_dir = cwd / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        result_data = {
+            "metrics": metrics,
+            "status": "success",
+        }
+        (results_dir / "result.json").write_text(json.dumps(result_data))
+
+        return RunResult(
+            success=True,
+            metrics=metrics,
+            stdout="fake output",
+            returncode=0,
+        )
+
+
+class TestInterIterationFeedback:
+    """Tests that the orchestrator includes gate failure details in retry prompts."""
+
+    def test_first_iteration_has_no_previous_failures(self, tmp_path):
+        """First iteration prompt does not contain previous_failures context."""
+        exp_dir = _create_experiment(tmp_path)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, backend = _make_orchestrator(
+            exp_dir, metrics=passing_metrics, max_iterations=1
+        )
+
+        # Write a WORKFLOW.md with dispatch-time Jinja2 variables (no raw blocks,
+        # since the orchestrator renders these via render_prompt at dispatch time).
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "Phase: {{ phase }}\n"
+            "{% if previous_failures %}"
+            "PREVIOUS FAILURES:\n{{ previous_failures }}\n"
+            "{% endif %}"
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        assert len(backend.calls) == 1
+        first_prompt = backend.calls[0]["prompt"]
+        assert "PREVIOUS FAILURES" not in first_prompt
+
+    def test_retry_prompt_includes_previous_gate_failures(self, tmp_path):
+        """After gate failure, the next iteration prompt includes failure details."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Iteration 1: failing metrics, Iteration 2: passing metrics
+        failing = {"cross_entropy_delta_nats": 0.001, "p_value": 0.5}
+        passing = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+
+        backend = _SequentialBackend(metrics_sequence=[failing, passing])
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=3,
+        )
+
+        # Write a WORKFLOW.md with dispatch-time Jinja2 variables (no raw blocks,
+        # since the orchestrator renders these via render_prompt at dispatch time).
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "Phase: {{ phase }}\n"
+            "{% if previous_failures %}"
+            "PREVIOUS FAILURES:\n{{ previous_failures }}\n"
+            "{% endif %}"
+        )
+
+        result = orch.run_phase("phase1_oracle_alpha")
+
+        # Should have passed on iteration 2
+        assert result.gate_passed is True
+        assert len(backend.calls) == 2
+
+        # First iteration prompt should NOT have previous failures
+        first_prompt = backend.calls[0]["prompt"]
+        assert "PREVIOUS FAILURES" not in first_prompt
+
+        # Second iteration prompt SHOULD have previous failures
+        second_prompt = backend.calls[1]["prompt"]
+        assert "PREVIOUS FAILURES" in second_prompt
+
+        # Should mention the specific failing metrics with observed values
+        assert "cross_entropy_delta_nats" in second_prompt
+        assert "p_value" in second_prompt
+        # Should include the observed values
+        assert "0.001" in second_prompt
+        assert "0.5" in second_prompt
+
+
+class TestOrchestratorDefaultTimeout:
+    """Tests for Orchestrator passing default_timeout to runner.execute."""
+
+    def test_orchestrator_default_timeout_attribute(self, tmp_path):
+        """Orchestrator stores default_timeout (default 14400)."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+        assert orch.default_timeout == 14400
+
+    def test_orchestrator_custom_default_timeout(self, tmp_path):
+        """Orchestrator accepts a custom default_timeout."""
+        exp_dir = _create_experiment(tmp_path)
+        backend = _FakeBackend(
+            metrics={"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        )
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir, runner=runner, default_timeout=7200,
+        )
+        assert orch.default_timeout == 7200
+
+    def test_orchestrator_passes_timeout_to_runner(self, tmp_path):
+        """Orchestrator passes default_timeout to runner.execute() calls."""
+        exp_dir = _create_experiment(tmp_path)
+        backend = _FakeBackend(
+            metrics={"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        )
+        recording_runner = _RecordingRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=recording_runner,
+            max_iterations=1,
+            default_timeout=3600,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        assert len(recording_runner.execute_calls) >= 1
+        assert recording_runner.execute_calls[0]["timeout"] == 3600

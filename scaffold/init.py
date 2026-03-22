@@ -166,6 +166,7 @@ def init_experiment(
     root: Path,
     name: str | None = None,
     skip_external: bool = False,
+    _linear_client: object | None = None,
 ) -> Path:
     """Initialize a complete experiment directory from config.
 
@@ -174,6 +175,7 @@ def init_experiment(
         root: Parent directory where the experiment directory will be created.
         name: Override for the experiment directory name. Defaults to config.name.
         skip_external: If True, skip git init, beads init, and venv creation.
+        _linear_client: Optional pre-configured LinearClient for testing.
 
     Returns:
         Path to the created experiment directory.
@@ -230,5 +232,37 @@ def init_experiment(
     # 6. Initialize .scaffold/artifacts.json (JSON only; template already rendered RESULTS_INDEX.md)
     artifacts_path = exp_dir / ".scaffold" / "artifacts.json"
     artifacts_path.write_text(json.dumps([], indent=2) + "\n")
+
+    # 7. Git init (when skip_external=False)
+    if not skip_external:
+        import subprocess
+
+        try:
+            subprocess.run(["git", "init"], cwd=exp_dir, capture_output=True, check=True)
+            subprocess.run(["git", "add", "."], cwd=exp_dir, capture_output=True, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", "Initialize experiment via scaffold"],
+                cwd=exp_dir,
+                capture_output=True,
+                check=True,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass  # Git is optional
+
+    # 8. Create Linear issue (graceful degradation)
+    if not skip_external:
+        try:
+            linear = _linear_client
+            if linear is None:
+                from scaffold.linear import LinearClient
+                linear = LinearClient()
+            issue_id = linear.create_experiment_issue(
+                title=experiment_name,
+                description=config.research_question,
+            )
+            linear_json_path = exp_dir / ".scaffold" / "linear.json"
+            linear_json_path.write_text(json.dumps({"issue_id": issue_id}) + "\n")
+        except Exception:
+            pass  # Linear is optional; continue without it
 
     return exp_dir

@@ -232,6 +232,25 @@ def launch(docs_dir, root, review_config, dry_run):
     experiment_dir = init_experiment(config, experiment_root, skip_external=False)
     click.echo(f"Experiment initialized at: {experiment_dir}")
 
+    # Copy source documents to experiment dir
+    import shutil
+
+    for src_doc in result.source_documents:
+        dest = experiment_dir / "background-work" / "source-docs" / src_doc.name
+        shutil.copy2(src_doc, dest)
+
+    # Chain to orchestrator
+    click.echo("Starting experiment phases...")
+    from scaffold.orchestrator import Orchestrator
+    from scaffold.runner import AgentRunner, ClaudeCodeBackend
+
+    agent_backend = ClaudeCodeBackend()
+    runner = AgentRunner(backend=agent_backend)
+    orchestrator = Orchestrator(experiment_dir, runner)
+    results = orchestrator.run_all(auto=True)
+    for r in results:
+        _print_phase_result(r)
+
 
 @main.command()
 def experiments():

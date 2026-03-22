@@ -209,6 +209,31 @@ class TestEvaluatePhaseGates:
         assert len(report.results) == 0
         assert len(report.failures) == 0
 
+    def test_all_skip_means_overall_fail(self):
+        """If ALL gates are SKIP (no metrics found), phase should NOT pass."""
+        gates = [
+            GateConfig(metric="metric_a", threshold=0.5, comparator="gte"),
+            GateConfig(metric="metric_b", threshold=1.0, comparator="gte"),
+        ]
+        phase = PhaseConfig(name="p1", description="test phase", gates=gates)
+        metrics = {}  # No metrics at all
+        report = evaluate_phase_gates(phase, metrics)
+
+        assert report.overall_pass is False
+        # All results should be SKIP
+        assert all(r.status == "SKIP" for r in report.results)
+
+    def test_all_skip_with_unrelated_metrics_means_overall_fail(self):
+        """If all GATE metrics are missing (even if dict has other keys), fail."""
+        gates = [
+            GateConfig(metric="metric_a", threshold=0.5, comparator="gte"),
+        ]
+        phase = PhaseConfig(name="p1", description="test phase", gates=gates)
+        metrics = {"unrelated_metric": 0.9}  # Has data, but not for any gate
+        report = evaluate_phase_gates(phase, metrics)
+
+        assert report.overall_pass is False
+
     def test_failures_list_only_contains_fail_status(self):
         """The failures list should only contain FAIL results, not SKIP or PASS."""
         gates = [

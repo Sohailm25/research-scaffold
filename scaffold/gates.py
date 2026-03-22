@@ -80,7 +80,9 @@ def evaluate_phase_gates(
     """
     results = [evaluate_gate(gate, metrics) for gate in phase.gates]
     failures = [r for r in results if r.status == "FAIL"]
-    overall_pass = len(failures) == 0
+    # A phase fails if any gate FAILed OR if all gates were SKIPped (no metrics found)
+    all_skipped = len(results) > 0 and all(r.status == "SKIP" for r in results)
+    overall_pass = len(failures) == 0 and not all_skipped
 
     return PhaseGateReport(
         phase_name=phase.name,
