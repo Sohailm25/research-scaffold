@@ -1,0 +1,26 @@
+# {{ experiment_name }}
+
+{{ research_question }}
+
+## Operating Scaffold
+
+- `AGENTS.md` is the local operating contract.
+- `CURRENT_STATE.md` is the current single-source status file.
+- `DECISIONS.md` records non-trivial decisions and pivots.
+- `SCRATCHPAD.md` is the pre-run and post-run execution log.
+- `THOUGHT_LOG.md` captures research reflections: hunches, predictions, surprises, confidence shifts, and the evolving feel of the experiment.
+- `history/PREREG.md` is the preregistered claim and gate document.
+- `configs/experiment.yaml` is the source-of-truth configuration.
+- `results/RESULTS_INDEX.md` indexes all experimental artifacts.
+
+## Quick Start
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m pytest tests/
+```
+
+## Issue Tracking
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` for workflow context.

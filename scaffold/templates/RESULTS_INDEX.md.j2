@@ -1,0 +1,28 @@
+# Results Index
+
+Register every experimental artifact here. Never delete entries; mark superseded artifacts explicitly.
+
+## Rules
+
+- Every artifact saved under `results/` must appear here.
+- Every entry should state the relevant hypothesis or lane.
+- Every entry should state `pass`, `fail`, `mixed`, `partial`, or `planning`.
+- Every summary must respect the framing locks defined in `history/PREREG.md`.
+
+## Infrastructure
+
+| Artifact | Lane | Status | Path |
+|---|---|---|---|
+| (no entries yet) | infrastructure | planning | - |
+{% for lane in required_lanes %}
+## {{ lane | replace("_", " ") | title }}
+
+| Artifact | Lane | Status | Path |
+|---|---|---|---|
+| (no entries yet) | {{ lane }} | planning | - |
+{% endfor %}
+## Figures
+
+| Artifact | Lane | Status | Path |
+|---|---|---|---|
+| (no entries yet) | figures | planning | - |

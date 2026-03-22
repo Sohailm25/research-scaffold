@@ -1,0 +1,59 @@
+# Preregistration
+
+## Scope
+
+This preregistration covers the {{ experiment_name }} experiment.
+
+## Framing Lock
+{% for lock in framing_locks %}
+- {{ lock }}
+{%- endfor %}
+
+## Primary Hypothesis
+
+{{ hypotheses.primary }}
+
+## Secondary Hypotheses
+{% if hypotheses.secondary is defined %}
+{%- for h in hypotheses.secondary %}
+{{ loop.index }}. {{ h }}
+{%- endfor %}
+{% endif %}
+
+## Null Models
+{% for null in null_models %}
+- {{ null.name }}{% if null.description %}: {{ null.description }}{% endif %}
+
+{%- endfor %}
+
+## Phase Gates
+{% for phase in phases %}
+### {{ phase.name }}: {{ phase.description }}
+{% for gate in phase.gates %}
+- {{ gate.metric }}: threshold {{ gate.threshold }} ({{ gate.comparator }})
+{%- endfor %}
+{% if phase.requires_human_review is defined and phase.requires_human_review %}
+- Requires human review before advancing.
+{%- endif %}
+{% if phase.depends_on is defined and phase.depends_on %}
+- Depends on: {{ phase.depends_on | join(", ") }}
+{%- endif %}
+{% endfor %}
+
+## Statistics Defaults
+{% if statistics %}
+{%- for key, value in statistics.items() %}
+- {{ key }}: {{ value }}
+{%- endfor %}
+{% else %}
+- No statistics defaults specified. Define before claim-bearing runs.
+{% endif %}
+
+## Reproducibility
+{% if reproducibility %}
+{%- for key, value in reproducibility.items() %}
+- {{ key }}: {{ value }}
+{%- endfor %}
+{% else %}
+- No reproducibility constraints specified.
+{% endif %}

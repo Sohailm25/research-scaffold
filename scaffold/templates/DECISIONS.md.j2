@@ -1,0 +1,15 @@
+# Decisions Log
+
+Record non-trivial decisions and pivots here. Every entry should include:
+
+- **Trigger:** what prompted the decision
+- **Decision:** what was decided
+- **Rationale:** why this choice was made
+- **Impact:** what changes as a result
+
+## [{{ date }}] DECISION: Initialize {{ experiment_name }} experiment
+
+- Trigger: new experiment created via scaffold init.
+- Decision: initialize the experiment workspace with preregistered hypotheses, phases, and lanes.
+- Rationale: establishing a structured research scaffold before any experimental work begins.
+- Impact: all subsequent tracking, commits, and results follow the structure defined in `configs/experiment.yaml` and `history/PREREG.md`.

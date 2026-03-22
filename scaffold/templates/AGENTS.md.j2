@@ -1,0 +1,285 @@
+# AGENTS.md - Codex Agent Directives for {{ experiment_name }}
+
+## Scope and Precedence
+
+This file governs all work within `{{ experiment_name }}/` and supersedes any AGENTS.md found in parent directories for this workspace.
+{% if parent_overrides %}
+
+Parent-workspace assumptions that do not apply here:
+{% for override in parent_overrides %}
+- {{ override }}
+{%- endfor %}
+{% endif %}
+
+Everything below this section is the authoritative directive set for this experiment.
+
+This experiment is grounded in local source documents, not in inherited assumptions from parent workspaces.
+
+## Issue Tracking
+
+This project uses **bd (beads)** for issue tracking.
+Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
+
+**Quick reference:**
+- `bd ready` - Find unblocked work
+- `bd create "Title" --type task --priority 2` - Create issue
+- `bd close <id>` - Complete work
+- `bd sync` - Sync with git (run at session end)
+
+For full workflow details: `bd prime`
+
+## Mission
+
+{{ research_question }}
+
+## Thesis Locks
+
+These are not optional. Every implementation and write-up must preserve them.
+{% for lock in framing_locks %}
+{{ loop.index }}. {{ lock }}
+{%- endfor %}
+
+## Runtime Assumptions
+
+- Python environment: `{{ runtime.python_env }}`
+- Primary backend: {{ runtime.accelerator }}
+- Fallback tooling: {{ runtime.fallback }} where {{ runtime.accelerator }} coverage is incomplete
+{% if runtime.platform is defined and runtime.platform %}- Platform: {{ runtime.platform }}{% endif %}
+
+## Epistemic Standards
+
+You are doing scientific work. Act like it.
+
+1. Assumption quarantine. Any unverified statement is a hypothesis, not a fact. Label claims with `known`, `observed`, `inferred`, or `unknown`. Never upgrade `inferred` to `known` without evidence.
+2. Evidence-first reasoning. Base conclusions on artifacts you can inspect: logs, metrics, cached activations, saved plots, test output, and local result files. A claim without an inspectable artifact is weak evidence.
+3. No forced logic. Reject narrative chains that skip causal steps. If A implies B and B implies C, verify A to C directly before writing as if it were established.
+4. Claim-evidence proportionality. Never write `validated`, `confirmed`, or `significant` without the metric, the comparison, and the threshold.
+5. Adversarial self-questioning is mandatory before claim-bearing runs:
+   - What is the most likely design flaw?
+   - What is the simplest confound that could explain a positive result?
+   - What would failure look like, and is the run designed to detect it?
+   - If the expected result appears immediately, what is the probability the implementation is wrong?
+6. Pre-register before running. The local prereg lives in `history/PREREG.md` and is the mandatory prereg artifact for this repo.
+7. Skepticism toward clean results. A result that looks too neat on the first pass deserves extra scrutiny, not celebration.
+8. Implementation skepticism is critical. A script that runs and emits plausible numbers has not been validated. Validation requires an independent check.
+
+## Directory Map
+
+```text
+{{ experiment_name }}/
+├── AGENTS.md
+├── CURRENT_STATE.md
+├── DECISIONS.md
+├── README.md
+├── SCRATCHPAD.md
+├── THOUGHT_LOG.md
+├── configs/
+│   └── experiment.yaml
+├── history/
+│   └── PREREG.md
+├── journal/
+│   ├── current_state.md
+│   └── logs/
+├── notebooks/
+├── results/
+│   ├── infrastructure/
+{%- for lane in required_lanes %}
+│   ├── {{ lane }}/
+{%- endfor %}
+│   └── figures/
+├── scripts/
+├── sessions/
+│   └── SESSION_TEMPLATE.md
+└── tests/
+```
+
+## Research Navigation Guide
+
+The source material may be split across multiple documents. Do not re-read everything blindly every session.
+
+### Always read first in a fresh session
+
+1. `CURRENT_STATE.md`
+2. `journal/current_state.md`
+3. `SCRATCHPAD.md`
+4. `THOUGHT_LOG.md`
+5. `DECISIONS.md`
+6. `history/PREREG.md`
+
+### Read by question
+
+- Hypothesis, nulls, and phase gates: `history/PREREG.md`
+- Experiment configuration and runtime: `configs/experiment.yaml`
+- Results and artifact index: `results/RESULTS_INDEX.md`
+
+### Read only when needed
+
+- Background references and papers when you need external context
+- Implementation-specific scripts when you need execution details
+- Test files when you need to verify behavior
+
+## Operating Rules
+
+### 1. Document Discipline
+
+Before starting a non-trivial work session:
+
+1. Read `CURRENT_STATE.md`
+2. Create or update a session log in `sessions/`
+3. Confirm the next task against the active phase and the prereg
+
+During work:
+
+- Update `SCRATCHPAD.md` before and after any substantial local run.
+- Use `THOUGHT_LOG.md` for research reflections throughout the project. Record hunches, predictions, surprises, confidence shifts, and the current feel of the experiment when those would be useful to understand later.
+- Agents may launch bounded parallel sidecar work for tangential research, literature review, or methodological checking when it materially informs the paper and does not block the critical path.
+- Log non-obvious pivots in `DECISIONS.md` before proceeding.
+- Update `CURRENT_STATE.md` whenever the actual project state changes.
+- Register durable outputs in `results/RESULTS_INDEX.md`.
+
+`THOUGHT_LOG.md` rules:
+
+- This file is for research reflections, not claim-bearing evidence.
+- It is the right place for hunches, predictions, guesses, interesting facts, surprising failures, qualitative impressions, and "I think this is going to break because..." notes.
+- It should preserve the feel of the experiment as it unfolds, including confidence changes and competing hypotheses.
+- Keep it high-signal and readable. Write concrete reflections, not filler.
+- Label speculative content clearly enough that no one confuses it with validated findings.
+- If sidecar research or parallel exploration turns up something interesting, summarize the useful takeaway here or in a durable background-work note instead of letting it vanish in ephemeral agent output.
+
+Long-running process rules:
+
+- Any run that is expensive enough to care about surviving laptop movement, terminal closure, Wi-Fi changes, or disconnects must run inside `tmux`.
+- Long-running runs must save resumable checkpoints to disk on a defined cadence. If the code cannot checkpoint, add checkpointing before launch rather than hoping the run survives.
+- Before launch, record the `tmux` session name, checkpoint path, checkpoint cadence, log path, and resume command in `SCRATCHPAD.md`.
+- After launch, verify that checkpoints are actually being written and that the resume command works against the latest checkpoint.
+- Prefer durable checkpoint locations under the relevant `results/` lane rather than ephemeral temp directories.
+
+Pre-run checkpoint format for `SCRATCHPAD.md`:
+
+```text
+## [TIMESTAMP] PRE-RUN: [run name]
+- tmux session: [session name or N/A]
+- Script: scripts/[filename].py
+- Command: [exact command]
+- Config: [key hyperparameters]
+- What I'm testing: [one-sentence hypothesis]
+- Expected outcome: [what success looks like]
+- Expected duration: ~X minutes
+- Checkpoint path: [path or N/A]
+- Checkpoint cadence: [every N steps / minutes / epochs]
+- Log path: [path]
+- Resume command: [exact command]
+- Main confound to watch: [one sentence]
+- Implementation verified: YES/NO - [what independent check was run]
+- Status: LAUNCHING
+```
+
+Post-run checkpoint format for `SCRATCHPAD.md`:
+
+```text
+## [TIMESTAMP] POST-RUN: [run name]
+- Outcome: SUCCESS / FAILURE / PARTIAL
+- Key metric: [the number that matters]
+- Artifacts saved: [paths]
+- Latest checkpoint: [path or none]
+- Anomalies: [anything unexpected, or none]
+- Next step: [what follows from this result]
+```
+
+### 2. Session Check-In Protocol
+
+If context is thin or the session resumed after compaction:
+
+1. Read `CURRENT_STATE.md`
+2. Read the latest entries in `SCRATCHPAD.md`
+3. Read the latest entries in `THOUGHT_LOG.md`
+4. Read the latest entries in `DECISIONS.md`
+5. Read the latest session log in `sessions/`
+6. Check `results/RESULTS_INDEX.md`
+7. Only then return to the research documents
+
+Do not re-explore the whole repo if the state docs already answer the question.
+
+### 3. The Research Documents Are the Spec
+
+- `history/PREREG.md` defines what is pre-registered locally.
+- `configs/experiment.yaml` defines the experiment configuration.
+- If these documents conflict, resolve the conflict explicitly in `DECISIONS.md` before coding.
+
+### 4. Execution Order
+
+Use this as the default phase flow:
+{% for phase in phases %}
+{{ loop.index }}. {{ phase.name }}: {{ phase.description }}
+{%- endfor %}
+
+Do not skip ahead to result interpretation until prerequisite phase gates are green.
+
+### 5. Experiment Design Defaults
+
+- When a question is materially underspecified or multiple experimental approaches seem plausible, draft a short plan collaboratively before execution.
+- That plan should include the motivation, the concrete comparison or measurement, and a mock-up of the main plot or table using fake numbers if needed.
+- Approved non-trivial new sprints should create or update a bd issue before execution so the work is visible to future sessions and parallel copies.
+- Start with the smallest experiment that can genuinely falsify or support the idea. Do not scale up before the tiny version shows signs of life.
+- Prefer tight feedback loops. A five-minute run is excellent, an hour is acceptable, and anything longer than a day requires explicit justification in `DECISIONS.md`.
+- Treat most early-stage work as exploratory: the goal is often to gain surface area, expose unknown unknowns, and sharpen the ontology before expensive runs.
+- Use parallel sidecar agents for bounded tangential research when helpful, especially for papers, tools, benchmarks, or implementation caveats that may enlighten the main experiment without blocking it.
+- Before making a high-claim interpretation, clear a stability suite and an out-of-sample predictiveness check on the confirmatory split rather than trusting a descriptive fit.
+
+### 6. Run Design Guardrails
+{% for guardrail in guardrails %}
+- {{ guardrail }}
+{%- endfor %}
+
+### 7. Required Experiment Lanes
+
+The following lanes must remain visible in `CURRENT_STATE.md`, `history/PREREG.md`, and `results/RESULTS_INDEX.md`:
+{% for lane in required_lanes %}
+- {{ lane }}
+{%- endfor %}
+
+### 8. Results Registration
+
+Every saved artifact belongs in `results/RESULTS_INDEX.md`.
+Do not delete old entries; mark them superseded.
+
+### 9. Experiment Write-Ups
+
+Every non-trivial experiment should end with a concise technical write-up stored near the relevant artifacts. The default structure is:
+
+- Motivation / Methods / Results / Limitations / Next Steps
+
+The main figure or table should be easy to identify from a quick scan of the directory.
+
+### 10. Branch Truth
+
+- The canonical mainline branch for this repo should be treated as `main` until explicitly renamed.
+- Completed work branches must be merged back into the mainline branch so that it remains the source of truth.
+- In-progress work may remain on a task branch until the task is actually done. Do not force premature merges for work that is still active.
+- Do not leave completed work stranded only on a WIP branch.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds

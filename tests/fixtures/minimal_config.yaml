@@ -1,0 +1,76 @@
+# ABOUTME: Minimal valid experiment config for testing config loading.
+# ABOUTME: Contains all required fields with sensible defaults.
+
+name: test-experiment
+thesis: test_thesis_statement
+research_question: Does X cause Y?
+
+models:
+  development:
+    name: gpt2
+    purpose: fast_iteration
+  primary:
+    name: google/gemma-2-2b
+    purpose: main_results
+
+runtime:
+  python_env: .venv
+  accelerator: mps
+  fallback: cpu
+  platform: macbook_m4_128gb
+
+hypotheses:
+  primary: "Standard transformers contain latent depth-routing structure."
+  secondary:
+    - "Routing patterns correlate with input characteristics."
+    - "Softmax-constrained weights improve prediction loss."
+
+null_models:
+  - name: uniform
+    description: "Equal weight to all layers"
+  - name: random_dirichlet
+    description: "Random weights from Dirichlet distribution"
+
+phases:
+  - name: phase1_oracle_alpha
+    description: "Compute oracle alpha weights"
+    gates:
+      - metric: cross_entropy_delta_nats
+        threshold: 0.01
+        comparator: gte
+      - metric: p_value
+        threshold: 0.01
+        comparator: lte
+    requires_human_review: false
+    depends_on: []
+  - name: phase2_pattern_analysis
+    description: "Analyze routing patterns"
+    gates:
+      - metric: silhouette_score
+        threshold: 0.2
+        comparator: gte
+    requires_human_review: true
+    depends_on:
+      - phase1_oracle_alpha
+
+required_lanes:
+  - oracle_alpha
+  - pattern_analysis
+
+statistics:
+  clustering_distance: jensen_shannon_divergence
+  report_effect_sizes: true
+
+framing_locks:
+  - "Use non-causal language"
+  - "No em dashes"
+
+guardrails:
+  - "Never claim causation"
+  - "Report bootstrap CIs"
+
+budget: 50.0
+
+reproducibility:
+  prereg_publication_target: local_only
+  freeze_dependencies: true

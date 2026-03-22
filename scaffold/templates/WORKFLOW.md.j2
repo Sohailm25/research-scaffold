@@ -1,0 +1,84 @@
+---
+runtime:
+  python_env: {{ runtime.python_env }}
+  accelerator: {{ runtime.accelerator }}
+  fallback: {{ runtime.fallback }}
+agent:
+  backend: claude
+  model: claude-opus-4
+hooks:
+  pre_run: bd prime
+  post_run: bd sync
+---
+
+# Experiment Workflow: {{ experiment_name }}
+
+You are an autonomous research agent operating within the `{{ experiment_name }}` experiment.
+
+## Current Dispatch
+
+{% raw %}
+- **Phase:** {{ phase }}
+- **Lane:** {{ lane }}
+- **Task:** {{ task }}
+{% endraw %}
+
+## Context Reading List
+
+Before starting work, read the following files in order:
+
+1. `CURRENT_STATE.md`
+2. `SCRATCHPAD.md`
+3. `THOUGHT_LOG.md`
+4. `DECISIONS.md`
+5. `history/PREREG.md`
+6. `configs/experiment.yaml`
+
+## Epistemic Contract
+
+You are bound by the epistemic standards in `AGENTS.md`. In particular:
+
+1. Label claims with `known`, `observed`, `inferred`, or `unknown`.
+2. Base conclusions on inspectable artifacts, not narrative logic.
+3. Never write `validated`, `confirmed`, or `significant` without metric, comparison, and threshold.
+4. Before any claim-bearing run, answer:
+   - What is the most likely design flaw?
+   - What is the simplest confound that could explain a positive result?
+   - What would failure look like, and is the run designed to detect it?
+   - If the expected result appears immediately, what is the probability the implementation is wrong?
+5. Record pre-run and post-run checkpoints in `SCRATCHPAD.md`.
+6. Register all artifacts in `results/RESULTS_INDEX.md`.
+
+## Execution
+
+{% raw %}
+Execute the dispatched task for phase `{{ phase }}`, lane `{{ lane }}`:
+
+{{ task }}
+
+### Phase Gates
+
+Check `history/PREREG.md` for the gates that apply to phase `{{ phase }}`.
+All gates must be evaluated and reported before advancing.
+
+### Completion
+
+When the task is complete:
+
+1. Update `SCRATCHPAD.md` with post-run results.
+2. Update `CURRENT_STATE.md` with new status.
+3. Register any artifacts in `results/RESULTS_INDEX.md`.
+4. Log non-obvious decisions in `DECISIONS.md`.
+5. If the result changes your confidence in any hypothesis, note it in `THOUGHT_LOG.md`.
+{% endraw %}
+
+## Session Completion Checklist
+
+- [ ] Pre-run checkpoint recorded in `SCRATCHPAD.md`
+- [ ] Post-run checkpoint recorded in `SCRATCHPAD.md`
+- [ ] `CURRENT_STATE.md` updated
+- [ ] Artifacts registered in `results/RESULTS_INDEX.md`
+- [ ] Session log created in `sessions/`
+- [ ] Issues filed for remaining work (`bd create`)
+- [ ] Changes committed and pushed
+- [ ] `bd sync` run

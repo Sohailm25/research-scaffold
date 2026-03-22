@@ -1,0 +1,39 @@
+# Scratchpad
+
+Use this file for execution checkpoints and transient notes. Every substantial local run should have a pre-run and post-run entry.
+
+## Pre-Run Template
+
+```text
+## [TIMESTAMP] PRE-RUN: [run name]
+- tmux session: [session name or N/A]
+- Script: scripts/[filename].py
+- Command: [exact command]
+- Config: [key hyperparameters]
+- What I'm testing: [one-sentence hypothesis]
+- Expected outcome: [what success looks like]
+- Expected duration: ~X minutes
+- Checkpoint path: [path or N/A]
+- Checkpoint cadence: [every N steps / minutes / epochs]
+- Log path: [path]
+- Resume command: [exact command]
+- Main confound to watch: [one sentence]
+- Implementation verified: YES/NO - [what independent check was run]
+- Status: LAUNCHING
+```
+
+## Post-Run Template
+
+```text
+## [TIMESTAMP] POST-RUN: [run name]
+- Outcome: SUCCESS / FAILURE / PARTIAL
+- Key metric: [the number that matters]
+- Artifacts saved: [paths]
+- Latest checkpoint: [path or none]
+- Anomalies: [anything unexpected, or none]
+- Next step: [what follows from this result]
+```
+
+## Bootstrap Notes
+
+- No experimental runs have been executed from this scaffold yet.

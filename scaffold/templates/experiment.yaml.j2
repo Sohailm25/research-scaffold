@@ -1,0 +1,114 @@
+# ABOUTME: Source-of-truth configuration for the {{ experiment_name }} experiment.
+# ABOUTME: This file encodes local runtime assumptions, preregistered lanes, and thesis locks.
+
+experiment:
+  name: {{ experiment_name }}
+  thesis: {{ thesis }}
+
+research_question: >
+  {{ research_question }}
+
+runtime:
+  python_env: {{ runtime.python_env }}
+  accelerator: {{ runtime.accelerator }}
+  fallback: {{ runtime.fallback }}
+{%- if runtime.platform is defined and runtime.platform %}
+  platform: {{ runtime.platform }}
+{%- endif %}
+
+models:
+{%- if models.development is defined %}
+  development:
+    name: {{ models.development.name }}
+    purpose: {{ models.development.purpose }}
+{%- endif %}
+{%- if models.primary is defined %}
+  primary:
+    name: {{ models.primary.name }}
+    purpose: {{ models.primary.purpose }}
+{%- endif %}
+{%- if models.secondary is defined and models.secondary %}
+  secondary:
+    name: {{ models.secondary.name }}
+    purpose: {{ models.secondary.purpose }}
+{%- endif %}
+
+framing_locks:
+{%- for lock in framing_locks %}
+  - "{{ lock }}"
+{%- endfor %}
+
+hypotheses:
+  primary: >
+    {{ hypotheses.primary }}
+{%- if hypotheses.secondary is defined and hypotheses.secondary %}
+  secondary:
+{%- for h in hypotheses.secondary %}
+    - "{{ h }}"
+{%- endfor %}
+{%- endif %}
+
+null_models:
+{%- for null in null_models %}
+  - name: {{ null.name }}
+{%- if null.description %}
+    description: "{{ null.description }}"
+{%- endif %}
+{%- endfor %}
+
+required_lanes:
+{%- for lane in required_lanes %}
+  - {{ lane }}
+{%- endfor %}
+
+statistics:
+{%- if statistics %}
+{%- for key, value in statistics.items() %}
+  {{ key }}: {{ value }}
+{%- endfor %}
+{%- else %}
+  {}
+{%- endif %}
+
+phases:
+{%- for phase in phases %}
+  - name: {{ phase.name }}
+    description: "{{ phase.description }}"
+    gates:
+{%- for gate in phase.gates %}
+      - metric: {{ gate.metric }}
+        threshold: {{ gate.threshold }}
+        comparator: {{ gate.comparator }}
+{%- endfor %}
+{%- if phase.requires_human_review is defined %}
+    requires_human_review: {{ phase.requires_human_review | lower }}
+{%- endif %}
+{%- if phase.depends_on is defined and phase.depends_on %}
+    depends_on:
+{%- for dep in phase.depends_on %}
+      - {{ dep }}
+{%- endfor %}
+{%- endif %}
+{%- endfor %}
+
+reproducibility:
+{%- if reproducibility %}
+{%- for key, value in reproducibility.items() %}
+  {{ key }}: {{ value }}
+{%- endfor %}
+{%- else %}
+  {}
+{%- endif %}
+
+guardrails:
+{%- for guardrail in guardrails %}
+  - "{{ guardrail }}"
+{%- endfor %}
+
+results:
+  directories:
+    - infrastructure
+{%- for lane in required_lanes %}
+    - {{ lane }}
+{%- endfor %}
+    - figures

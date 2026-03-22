@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.scaffold/
+.claude/
+thoughts/
+.tldr/
+.tldrignore

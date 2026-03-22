@@ -1,0 +1,50 @@
+# Current State
+
+**Last updated:** {{ date }}
+**Updated by:** scaffold init
+**Status:** planning
+**Current phase:** {{ phases[0].name if phases else "not started" }}
+
+## Active Thesis Lock
+
+- `known`: labels used for claims are:
+{%- for lock in framing_locks %}
+  - {{ lock }}
+{%- endfor %}
+
+## Phase Status
+
+| Phase | Status | Gates | Notes |
+|---|---|---|---|
+{%- for phase in phases %}
+| {{ phase.name }} | not_started | {{ phase.gates | length }} gate(s) | {{ phase.description }} |
+{%- endfor %}
+
+## Experiment Configuration
+
+- **Models:**
+{%- if models.development is defined %}
+  - Development: `{{ models.development.name }}` ({{ models.development.purpose }})
+{%- endif %}
+{%- if models.primary is defined %}
+  - Primary: `{{ models.primary.name }}` ({{ models.primary.purpose }})
+{%- endif %}
+{%- if models.secondary is defined and models.secondary %}
+  - Secondary: `{{ models.secondary.name }}` ({{ models.secondary.purpose }})
+{%- endif %}
+- **Runtime:** {{ runtime.python_env }} / {{ runtime.accelerator }} (fallback: {{ runtime.fallback }})
+
+## Required Lanes
+
+{%- for lane in required_lanes %}
+- [ ] {{ lane }}
+{%- endfor %}
+
+## What Happened Last
+
+- Experiment initialized from scaffold on {{ date }}.
+
+## Next Action
+
+- Review `history/PREREG.md` and confirm all hypotheses and gates.
+- Begin Phase 1 execution.

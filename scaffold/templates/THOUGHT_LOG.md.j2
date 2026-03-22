@@ -1,0 +1,48 @@
+# Thought Log
+
+Research reflections for {{ experiment_name }}.
+
+Purpose:
+
+- capture the qualitative feel of the experiment as it unfolds
+- preserve hunches, predictions, guesses, and competing hypotheses
+- note surprises, tensions, weird facts, and confidence shifts
+- leave behind a readable reflective trail for the end-of-project write-up
+
+Important rule:
+
+- entries here are not claim-bearing evidence
+- use this file for research reflections, intuitions, and interesting facts
+- validated conclusions still belong in `CURRENT_STATE.md`, `DECISIONS.md`, run artifacts, and the prereg-aware result docs
+- useful sidecar research findings belong here if they help preserve why a tangential paper, result, or intuition seemed important at the time
+
+Suggested entry format:
+
+```text
+## [TIMESTAMP] [short title]
+- Stage: [planning / implementation / analysis / synthesis]
+- Feel of the Experiment: [1-3 sentences]
+- Working Hypotheses:
+  - [hypothesis]
+- Hunches and Guesses:
+  - [guess]
+- Predictions:
+  - [what I think will happen]
+- Surprises and Tensions:
+  - [unexpected fact or inconsistency]
+- Confidence:
+  - [low / medium / high] in [what]
+- Interesting facts:
+  - [paper fact, implementation detail, or pattern worth remembering]
+- Sidecar research:
+  - [useful tangent from parallel reading or bounded exploration]
+```
+
+## Working Hypotheses
+
+- [ ] {{ hypotheses.primary }}
+{%- if hypotheses.secondary is defined %}
+{%- for h in hypotheses.secondary %}
+- [ ] {{ h }}
+{%- endfor %}
+{%- endif %}
