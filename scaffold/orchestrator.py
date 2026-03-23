@@ -246,11 +246,11 @@ class Orchestrator:
                             for r in report.results
                         ],
                     }
-                    all_skip = all(
-                        r["status"] == "SKIP"
-                        for r in gate_report_dict["results"]
+                    gate_results = gate_report_dict["results"]
+                    all_skip = len(gate_results) > 0 and all(
+                        r["status"] == "SKIP" for r in gate_results
                     )
-                    if not all_skip:
+                    if not all_skip and len(gate_results) > 0:
                         self._linear_client.add_phase_comment(
                             self._linear_issue_id, phase_name, gate_report_dict,
                             iteration=iterations,
