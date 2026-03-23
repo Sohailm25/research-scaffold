@@ -1308,3 +1308,222 @@ class TestOrchestratorProgressDashboard:
         state = ExperimentState.load(exp_dir / ".scaffold" / "state.json")
         phase = state._find_phase("phase1_oracle_alpha")
         assert phase.status == "COMPLETED"
+
+
+# --- ELI5 Collection and Persistence ---
+
+
+class TestCollectEli5:
+    """Tests for _collect_eli5 reading eli5 from result.json files."""
+
+    def test_collect_eli5_from_root_result_json(self, tmp_path):
+        """Reads eli5 from result.json in experiment root."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        # Write a result.json with eli5 in experiment root
+        (exp_dir / "result.json").write_text(
+            json.dumps({
+                "metrics": {"accuracy": 0.95},
+                "eli5": "The oracle signal was surprisingly strong.",
+            })
+        )
+
+        eli5 = orch._collect_eli5("phase1_oracle_alpha")
+        assert eli5 == "The oracle signal was surprisingly strong."
+
+    def test_collect_eli5_returns_none_when_no_eli5_field(self, tmp_path):
+        """Returns None when result.json exists but has no eli5 field."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        # Write a result.json without eli5
+        (exp_dir / "result.json").write_text(
+            json.dumps({"metrics": {"accuracy": 0.95}})
+        )
+
+        eli5 = orch._collect_eli5("phase1_oracle_alpha")
+        assert eli5 is None
+
+    def test_collect_eli5_returns_none_when_no_result_json(self, tmp_path):
+        """Returns None when no result.json files exist."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        # Remove any result.json files
+        for f in exp_dir.rglob("result.json"):
+            f.unlink()
+
+        eli5 = orch._collect_eli5("phase1_oracle_alpha")
+        assert eli5 is None
+
+    def test_collect_eli5_from_results_subdir(self, tmp_path):
+        """Reads eli5 from result.json in results/ subdirectory."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        results_dir = exp_dir / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "result.json").write_text(
+            json.dumps({
+                "metrics": {"accuracy": 0.95},
+                "eli5": "Found signal in subdirectory.",
+            })
+        )
+
+        eli5 = orch._collect_eli5("phase1_oracle_alpha")
+        assert eli5 == "Found signal in subdirectory."
+
+    def test_collect_eli5_root_overrides_subdir(self, tmp_path):
+        """Root result.json eli5 takes priority over results/ subdirectory."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        results_dir = exp_dir / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "result.json").write_text(
+            json.dumps({
+                "metrics": {"accuracy": 0.95},
+                "eli5": "Subdir eli5.",
+            })
+        )
+        (exp_dir / "result.json").write_text(
+            json.dumps({
+                "metrics": {"accuracy": 0.96},
+                "eli5": "Root eli5 takes priority.",
+            })
+        )
+
+        eli5 = orch._collect_eli5("phase1_oracle_alpha")
+        assert eli5 == "Root eli5 takes priority."
+
+
+class _ELI5FakeBackend:
+    """Test double that writes result.json with eli5 field."""
+
+    def __init__(self, metrics: dict | None = None, eli5: str | None = None):
+        self.metrics = metrics or {}
+        self.eli5 = eli5
+        self.calls: list[dict] = []
+
+    def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
+        self.calls.append({"prompt": prompt, "cwd": str(cwd), "timeout": timeout})
+
+        results_dir = cwd / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        result_data = {
+            "metrics": self.metrics,
+            "status": "success",
+        }
+        if self.eli5 is not None:
+            result_data["eli5"] = self.eli5
+        (results_dir / "result.json").write_text(json.dumps(result_data))
+
+        return RunResult(
+            success=True,
+            metrics=self.metrics,
+            stdout="fake output",
+            returncode=0,
+        )
+
+
+class TestEli5PersistenceOnGatePass:
+    """Tests that eli5.json is written after phase passes gates."""
+
+    def test_eli5_json_written_after_gate_pass(self, tmp_path):
+        """After a phase passes gates, eli5.json contains the phase's ELI5 summary."""
+        exp_dir = _create_experiment(tmp_path)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _ELI5FakeBackend(
+            metrics=passing_metrics,
+            eli5="The oracle signal exceeded expectations.",
+        )
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        eli5_path = exp_dir / ".scaffold" / "eli5.json"
+        assert eli5_path.exists(), "eli5.json should be written after gate pass"
+
+        eli5_data = json.loads(eli5_path.read_text())
+        assert "phase1_oracle_alpha" in eli5_data
+        assert eli5_data["phase1_oracle_alpha"]["summary"] == "The oracle signal exceeded expectations."
+        assert "iteration" in eli5_data["phase1_oracle_alpha"]
+        assert "timestamp" in eli5_data["phase1_oracle_alpha"]
+
+
+class TestEli5PersistenceOnGateFailure:
+    """Tests that eli5.json is written even after gate failure."""
+
+    def test_eli5_json_written_after_gate_failure(self, tmp_path):
+        """After a phase fails gates, eli5.json still contains the agent's ELI5 if present."""
+        exp_dir = _create_experiment(tmp_path)
+        failing_metrics = {"cross_entropy_delta_nats": 0.001, "p_value": 0.5}
+        backend = _ELI5FakeBackend(
+            metrics=failing_metrics,
+            eli5="Metrics were below threshold but pattern is interesting.",
+        )
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        eli5_path = exp_dir / ".scaffold" / "eli5.json"
+        assert eli5_path.exists(), "eli5.json should be written even on gate failure"
+
+        eli5_data = json.loads(eli5_path.read_text())
+        assert "phase1_oracle_alpha" in eli5_data
+        assert "below threshold" in eli5_data["phase1_oracle_alpha"]["summary"]
+
+
+class TestEli5PassedToLinearDescription:
+    """Tests that update_experiment_description is called with eli5_data."""
+
+    def test_update_description_called_with_eli5(self, tmp_path):
+        """After gate pass with eli5, update_experiment_description receives eli5_data."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment, canned_update]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _ELI5FakeBackend(
+            metrics=passing_metrics,
+            eli5="Strong oracle signal found.",
+        )
+        runner = AgentRunner(backend=backend)
+        from scaffold.linear import LinearClient
+        http_client = httpx.Client(transport=transport)
+        linear_client = LinearClient(api_key="test-key", client=http_client)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+            _linear_client=linear_client,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Find the description update request
+        desc_update_requests = []
+        for req in transport.requests:
+            body = json.loads(req.content)
+            if "issueUpdate" in body.get("query", ""):
+                inp = body.get("variables", {}).get("input", {})
+                if "description" in inp:
+                    desc_update_requests.append(body)
+
+        assert len(desc_update_requests) >= 1
+        description = desc_update_requests[0]["variables"]["input"]["description"]
+        assert "What We're Finding" in description
+        assert "Strong oracle signal found." in description

@@ -374,13 +374,39 @@ class LinearClient:
                 return exp["id"]
         return None
 
+    @staticmethod
+    def format_eli5_section(eli5_data: dict) -> str:
+        """Build the ELI5 section from accumulated phase summaries.
+
+        Args:
+            eli5_data: dict mapping phase_name to {"summary": str, "iteration": int, "timestamp": str}
+        """
+        if not eli5_data:
+            return ""
+
+        lines = []
+        lines.append("## What We're Finding\n")
+
+        for phase_name, entry in eli5_data.items():
+            summary = entry.get("summary", "")
+            if summary:
+                lines.append(f"**{phase_name}:** {summary}\n")
+
+        # If no summaries had content, return empty
+        if len(lines) == 1:
+            return ""
+
+        return "\n".join(lines) + "\n"
+
     def update_experiment_description(
-        self, issue_id: str, config, phase_states: list[dict]
+        self, issue_id: str, config, phase_states: list[dict],
+        eli5_data: dict | None = None,
     ) -> None:
-        """Update the issue description with current progress and config info."""
+        """Update the issue description with current progress, ELI5, and config info."""
         progress = self.format_progress_section(phase_states)
+        eli5 = self.format_eli5_section(eli5_data) if eli5_data else ""
         static_content = self.format_experiment_description(config)
-        full_description = progress + "\n---\n\n" + static_content
+        full_description = progress + "\n" + eli5 + "---\n\n" + static_content
 
         mutation = """
         mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {

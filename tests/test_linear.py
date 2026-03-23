@@ -1174,3 +1174,161 @@ class TestUpdateExperimentDescription:
         ]
         with pytest.raises(LinearAPIError, match="Failed to update issue"):
             client.update_experiment_description("issue-42", config, phase_states)
+
+
+# --- format_eli5_section ---
+
+
+class TestFormatEli5Section:
+    """LinearClient.format_eli5_section builds a 'What We're Finding' block."""
+
+    def test_single_phase_summary(self):
+        """One phase entry produces a header and one bold-named paragraph."""
+        eli5_data = {
+            "phase1_oracle": {
+                "summary": "We found strong oracle signal.",
+                "iteration": 1,
+                "timestamp": "2026-03-22T00:00:00Z",
+            }
+        }
+        result = LinearClient.format_eli5_section(eli5_data)
+        assert "## What We're Finding" in result
+        assert "**phase1_oracle:**" in result
+        assert "We found strong oracle signal." in result
+
+    def test_multiple_phase_summaries(self):
+        """Multiple phases each get their own bold-named paragraph."""
+        eli5_data = {
+            "phase1_oracle": {
+                "summary": "Oracle signal is positive.",
+                "iteration": 1,
+                "timestamp": "2026-03-22T00:00:00Z",
+            },
+            "phase2_patterns": {
+                "summary": "Routing clusters by task type.",
+                "iteration": 2,
+                "timestamp": "2026-03-22T01:00:00Z",
+            },
+        }
+        result = LinearClient.format_eli5_section(eli5_data)
+        assert "**phase1_oracle:**" in result
+        assert "Oracle signal is positive." in result
+        assert "**phase2_patterns:**" in result
+        assert "Routing clusters by task type." in result
+
+    def test_empty_dict_returns_empty_string(self):
+        """Empty eli5_data produces an empty string (no header)."""
+        result = LinearClient.format_eli5_section({})
+        assert result == ""
+
+    def test_skips_entries_with_empty_summary(self):
+        """Entries where summary is empty string are skipped."""
+        eli5_data = {
+            "phase1_oracle": {
+                "summary": "",
+                "iteration": 1,
+                "timestamp": "2026-03-22T00:00:00Z",
+            }
+        }
+        result = LinearClient.format_eli5_section(eli5_data)
+        # No summary text means no content to show, but header might still appear
+        # The key behavior: no phase line for empty summaries
+        assert "**phase1_oracle:**" not in result
+
+
+# --- update_experiment_description with eli5_data ---
+
+
+class TestUpdateExperimentDescriptionWithEli5:
+    """update_experiment_description includes ELI5 section when eli5_data provided."""
+
+    @pytest.fixture
+    def config(self):
+        from scaffold.config import (
+            ExperimentConfig,
+            GateConfig,
+            HypothesesConfig,
+            ModelConfig,
+            ModelsConfig,
+            PhaseConfig,
+            RuntimeConfig,
+        )
+        return ExperimentConfig(
+            name="test-exp",
+            thesis="Test thesis.",
+            research_question="Does X cause Y?",
+            models=ModelsConfig(
+                development=ModelConfig(name="gpt2", purpose="fast_iteration"),
+                primary=ModelConfig(name="gemma-2-2b", purpose="main_results"),
+            ),
+            runtime=RuntimeConfig(),
+            hypotheses=HypothesesConfig(primary="H1 statement"),
+            null_models=[],
+            phases=[
+                PhaseConfig(
+                    name="phase1_oracle",
+                    description="Compute oracle weights",
+                    gates=[
+                        GateConfig(metric="accuracy", threshold=0.9, comparator="gte"),
+                    ],
+                ),
+            ],
+            required_lanes=["oracle"],
+            statistics={},
+            framing_locks=[],
+            guardrails=[],
+        )
+
+    def test_description_includes_eli5_section(self, config):
+        """When eli5_data is provided, description contains the ELI5 block."""
+        canned = {"data": {"issueUpdate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        phase_states = [
+            {"name": "phase1_oracle", "status": "COMPLETED", "iteration_count": 1},
+        ]
+        eli5_data = {
+            "phase1_oracle": {
+                "summary": "Oracle signal is strong and novel.",
+                "iteration": 1,
+                "timestamp": "2026-03-22T00:00:00Z",
+            }
+        }
+        client.update_experiment_description(
+            "issue-42", config, phase_states, eli5_data=eli5_data
+        )
+
+        body = json.loads(transport.requests[0].content)
+        description = body["variables"]["input"]["description"]
+        assert "## What We're Finding" in description
+        assert "Oracle signal is strong and novel." in description
+
+    def test_description_omits_eli5_when_none(self, config):
+        """When eli5_data is None, description does not contain ELI5 block."""
+        canned = {"data": {"issueUpdate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        phase_states = [
+            {"name": "phase1_oracle", "status": "NOT_STARTED"},
+        ]
+        client.update_experiment_description("issue-42", config, phase_states)
+
+        body = json.loads(transport.requests[0].content)
+        description = body["variables"]["input"]["description"]
+        assert "What We're Finding" not in description
+
+    def test_description_omits_eli5_when_empty_dict(self, config):
+        """When eli5_data is empty dict, description does not contain ELI5 block."""
+        canned = {"data": {"issueUpdate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        phase_states = [
+            {"name": "phase1_oracle", "status": "NOT_STARTED"},
+        ]
+        client.update_experiment_description(
+            "issue-42", config, phase_states, eli5_data={}
+        )
+
+        body = json.loads(transport.requests[0].content)
+        description = body["variables"]["input"]["description"]
+        assert "What We're Finding" not in description

@@ -263,9 +263,19 @@ class Orchestrator:
                 except Exception:
                     pass
 
-            # Update issue description with current progress
+            # Persist ELI5 before description update so it's available
+            self._persist_eli5(phase_name, iterations)
+
+            # Update issue description with current progress and ELI5
             if self._linear_client and self._linear_issue_id:
                 try:
+                    eli5_data: dict = {}
+                    eli5_path = self.experiment_dir / ".scaffold" / "eli5.json"
+                    if eli5_path.exists():
+                        try:
+                            eli5_data = json.loads(eli5_path.read_text())
+                        except (json.JSONDecodeError, OSError):
+                            pass
                     self._linear_client.update_experiment_description(
                         self._linear_issue_id,
                         self.config,
@@ -277,6 +287,7 @@ class Orchestrator:
                             }
                             for ps in self.state.phases
                         ],
+                        eli5_data=eli5_data,
                     )
                 except Exception:
                     pass
@@ -447,6 +458,50 @@ class Orchestrator:
     def _save_state(self) -> None:
         """Persist state to .scaffold/state.json."""
         self.state.save(self.experiment_dir / ".scaffold" / "state.json")
+
+    def _collect_eli5(self, phase_name: str) -> str | None:
+        """Collect ELI5 summary from result.json files."""
+        eli5 = None
+
+        # Check results/ subdirectories
+        results_dir = self.experiment_dir / "results"
+        for result_file in results_dir.rglob("result.json"):
+            try:
+                data = json.loads(result_file.read_text())
+                if "eli5" in data and data["eli5"]:
+                    eli5 = data["eli5"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Check experiment root (higher priority)
+        root_result = self.experiment_dir / "result.json"
+        if root_result.exists():
+            try:
+                data = json.loads(root_result.read_text())
+                if "eli5" in data and data["eli5"]:
+                    eli5 = data["eli5"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        return eli5
+
+    def _persist_eli5(self, phase_name: str, iterations: int) -> None:
+        """Collect and persist ELI5 summary to .scaffold/eli5.json."""
+        eli5_text = self._collect_eli5(phase_name)
+        if eli5_text:
+            eli5_path = self.experiment_dir / ".scaffold" / "eli5.json"
+            eli5_data: dict = {}
+            if eli5_path.exists():
+                try:
+                    eli5_data = json.loads(eli5_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+            eli5_data[phase_name] = {
+                "summary": eli5_text,
+                "iteration": iterations,
+                "timestamp": _now_iso(),
+            }
+            eli5_path.write_text(json.dumps(eli5_data, indent=2) + "\n")
 
     def _collect_metrics(self, phase_name: str, run_result: RunResult | None = None) -> dict:
         """Collect metrics from result.json files and RunResult.

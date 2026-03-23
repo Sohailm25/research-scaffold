@@ -415,3 +415,37 @@ class TestWorkflowTemplateRandomSeed:
         final_output = self._render_runtime_stage(init_output, runtime_context)
 
         assert "Reproducibility" not in final_output
+
+
+class TestWorkflowTemplateEli5:
+    """Tests that WORKFLOW.md.j2 includes eli5 field in the result.json example."""
+
+    TEMPLATE_PATH = Path(__file__).parent.parent / "scaffold" / "templates" / "WORKFLOW.md.j2"
+
+    def _render_init_stage(self, context: dict) -> str:
+        """Stage 1: Render the .j2 template as init_experiment would."""
+        env = Environment(
+            loader=FileSystemLoader(str(self.TEMPLATE_PATH.parent)),
+            keep_trailing_newline=True,
+        )
+        template = env.get_template(self.TEMPLATE_PATH.name)
+        return template.render(**context)
+
+    def test_rendered_workflow_contains_eli5_in_result_json(self):
+        """The rendered WORKFLOW.md contains 'eli5' in the result.json example block."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        assert '"eli5"' in init_output
+
+    def test_rendered_workflow_contains_eli5_instruction(self):
+        """The rendered WORKFLOW.md contains instructions about the eli5 field."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        assert "eli5" in init_output.lower()
+        assert "required" in init_output.lower() or "plain language" in init_output.lower()
