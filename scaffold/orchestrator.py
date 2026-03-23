@@ -292,6 +292,21 @@ class Orchestrator:
                 except Exception:
                     pass
 
+            # Post agent thoughts as Linear comment
+            if self._linear_client and self._linear_issue_id:
+                try:
+                    thoughts = self._collect_thoughts()
+                    if thoughts:
+                        thought_body = (
+                            f"## Agent Notes: {phase_name} (iteration {iterations})\n\n"
+                            f"{thoughts}"
+                        )
+                        self._linear_client.add_thought_comment(
+                            self._linear_issue_id, thought_body
+                        )
+                except Exception:
+                    pass
+
             if report.overall_pass:
                 # Gates passed
                 self.state.advance_phase(phase_name, "GATE_PASSED")
@@ -458,6 +473,30 @@ class Orchestrator:
     def _save_state(self) -> None:
         """Persist state to .scaffold/state.json."""
         self.state.save(self.experiment_dir / ".scaffold" / "state.json")
+
+    def _collect_thoughts(self) -> str | None:
+        """Collect agent thoughts from result.json files."""
+        thoughts = None
+
+        results_dir = self.experiment_dir / "results"
+        for result_file in results_dir.rglob("result.json"):
+            try:
+                data = json.loads(result_file.read_text())
+                if "thoughts" in data and data["thoughts"]:
+                    thoughts = data["thoughts"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        root_result = self.experiment_dir / "result.json"
+        if root_result.exists():
+            try:
+                data = json.loads(root_result.read_text())
+                if "thoughts" in data and data["thoughts"]:
+                    thoughts = data["thoughts"]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        return thoughts
 
     def _collect_eli5(self, phase_name: str) -> str | None:
         """Collect ELI5 summary from result.json files."""

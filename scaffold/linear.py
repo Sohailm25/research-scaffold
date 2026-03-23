@@ -398,6 +398,25 @@ class LinearClient:
 
         return "\n".join(lines) + "\n"
 
+    def add_thought_comment(self, issue_id: str, body: str) -> None:
+        """Post agent thoughts/suggestions as a comment."""
+        mutation = """
+        mutation CreateComment($input: CommentCreateInput!) {
+            commentCreate(input: $input) {
+                success
+            }
+        }
+        """
+        variables = {
+            "input": {
+                "issueId": issue_id,
+                "body": body,
+            }
+        }
+        data = self._query(mutation, variables)
+        if not data.get("commentCreate", {}).get("success"):
+            raise LinearAPIError(f"Failed to add thought comment to issue {issue_id}")
+
     def update_experiment_description(
         self, issue_id: str, config, phase_states: list[dict],
         eli5_data: dict | None = None,

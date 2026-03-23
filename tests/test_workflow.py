@@ -449,3 +449,114 @@ class TestWorkflowTemplateEli5:
         init_output = self._render_init_stage(init_context)
         assert "eli5" in init_output.lower()
         assert "required" in init_output.lower() or "plain language" in init_output.lower()
+
+    def test_rendered_workflow_contains_thoughts_in_result_json(self):
+        """The rendered WORKFLOW.md contains 'thoughts' in the result.json example block."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        assert '"thoughts"' in init_output
+
+
+class TestWorkflowTemplateLiteratureSweep:
+    """Tests that WORKFLOW.md.j2 renders the deep literature sweep section for first iteration."""
+
+    TEMPLATE_PATH = Path(__file__).parent.parent / "scaffold" / "templates" / "WORKFLOW.md.j2"
+
+    def _render_init_stage(self, context: dict) -> str:
+        """Stage 1: Render the .j2 template as init_experiment would."""
+        env = Environment(
+            loader=FileSystemLoader(str(self.TEMPLATE_PATH.parent)),
+            keep_trailing_newline=True,
+        )
+        template = env.get_template(self.TEMPLATE_PATH.name)
+        return template.render(**context)
+
+    def _render_runtime_stage(self, init_output: str, context: dict) -> str:
+        """Stage 2: Render the init output as the orchestrator would at runtime."""
+        from jinja2 import BaseLoader
+        from scaffold.workflow import _SilentUndefined
+
+        env = Environment(loader=BaseLoader(), undefined=_SilentUndefined)
+        template = env.from_string(init_output)
+        return template.render(**context)
+
+    def _make_runtime_context(self, **overrides) -> dict:
+        """Build a standard runtime context with optional overrides."""
+        ctx = {
+            "phase": "phase1",
+            "lane": "oracle",
+            "task": "run experiment",
+            "gates_display": "No gates",
+            "iteration": 1,
+            "max_iterations": 5,
+            "previous_failures": "",
+        }
+        ctx.update(overrides)
+        return ctx
+
+    def test_literature_sweep_renders_on_first_iteration_no_completed(self):
+        """iteration=1 with no completed_phases renders the full literature sweep section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(iteration=1)
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Literature Review (Required Before Experiments)" in final_output
+        assert "at least 10" in final_output
+
+    def test_literature_sweep_absent_on_later_iterations(self):
+        """iteration=2 does NOT render the literature sweep section."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(iteration=2)
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Literature Review (Required Before Experiments)" not in final_output
+
+    def test_literature_sweep_absent_when_completed_phases_present(self):
+        """iteration=1 with completed_phases present does NOT render the literature sweep."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(
+            iteration=1,
+            completed_phases=[{"phase_name": "phase0", "metrics": {}, "iterations": 1}],
+        )
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "Literature Review (Required Before Experiments)" not in final_output
+
+    def test_pilot_phase_mentions_literature_review(self):
+        """Pilot phase guidance references LITERATURE_REVIEW.md."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(phase_type="pilot")
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "LITERATURE_REVIEW.md" in final_output
+
+    def test_confirm_phase_mentions_literature_review(self):
+        """Confirm phase guidance references LITERATURE_REVIEW.md."""
+        init_context = {
+            "experiment_name": "test-exp",
+            "runtime": {"python_env": ".venv", "accelerator": "mps", "fallback": "cpu"},
+        }
+        init_output = self._render_init_stage(init_context)
+        runtime_context = self._make_runtime_context(phase_type="confirm")
+        final_output = self._render_runtime_stage(init_output, runtime_context)
+
+        assert "LITERATURE_REVIEW.md" in final_output

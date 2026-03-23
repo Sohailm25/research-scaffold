@@ -1332,3 +1332,37 @@ class TestUpdateExperimentDescriptionWithEli5:
         body = json.loads(transport.requests[0].content)
         description = body["variables"]["input"]["description"]
         assert "What We're Finding" not in description
+
+
+# --- add_thought_comment ---
+
+
+class TestAddThoughtComment:
+    """Tests for LinearClient.add_thought_comment posting agent thoughts."""
+
+    def test_sends_comment_create_mutation_with_body(self):
+        """add_thought_comment sends a commentCreate mutation with the provided body."""
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        thought_body = (
+            "## Agent Notes: phase1_oracle (iteration 1)\n\n"
+            "The effect size is larger than expected. Consider testing on additional models."
+        )
+        client.add_thought_comment("issue-42", thought_body)
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert "commentCreate" in body["query"]
+        assert body["variables"]["input"]["issueId"] == "issue-42"
+        comment_text = body["variables"]["input"]["body"]
+        assert "Agent Notes" in comment_text
+        assert "effect size is larger than expected" in comment_text
+
+    def test_raises_on_unsuccessful_thought_comment(self):
+        """Raises LinearAPIError when the mutation fails."""
+        canned = {"data": {"commentCreate": {"success": False}}}
+        client, transport = _make_client(responses=[canned])
+
+        with pytest.raises(LinearAPIError, match="thought comment"):
+            client.add_thought_comment("issue-42", "Some thoughts")

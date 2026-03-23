@@ -1527,3 +1527,175 @@ class TestEli5PassedToLinearDescription:
         description = desc_update_requests[0]["variables"]["input"]["description"]
         assert "What We're Finding" in description
         assert "Strong oracle signal found." in description
+
+
+# --- Agent Thoughts Collection and Posting ---
+
+
+class TestCollectThoughts:
+    """Tests for _collect_thoughts reading thoughts from result.json files."""
+
+    def test_collect_thoughts_from_root_result_json(self, tmp_path):
+        """Reads thoughts from result.json in experiment root."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        (exp_dir / "result.json").write_text(
+            json.dumps({
+                "metrics": {"accuracy": 0.95},
+                "thoughts": "Consider increasing sample size for next phase.",
+            })
+        )
+
+        thoughts = orch._collect_thoughts()
+        assert thoughts == "Consider increasing sample size for next phase."
+
+    def test_collect_thoughts_returns_none_when_no_thoughts_field(self, tmp_path):
+        """Returns None when result.json exists but has no thoughts field."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        (exp_dir / "result.json").write_text(
+            json.dumps({"metrics": {"accuracy": 0.95}})
+        )
+
+        thoughts = orch._collect_thoughts()
+        assert thoughts is None
+
+    def test_collect_thoughts_returns_none_when_no_result_json(self, tmp_path):
+        """Returns None when no result.json files exist."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        # Remove any result.json files
+        for f in exp_dir.rglob("result.json"):
+            f.unlink()
+
+        thoughts = orch._collect_thoughts()
+        assert thoughts is None
+
+    def test_collect_thoughts_from_results_subdir(self, tmp_path):
+        """Reads thoughts from result.json in results/ subdirectory."""
+        exp_dir = _create_experiment(tmp_path)
+        orch, _ = _make_orchestrator(exp_dir)
+
+        results_dir = exp_dir / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "result.json").write_text(
+            json.dumps({
+                "metrics": {"accuracy": 0.95},
+                "thoughts": "Subdir thought about methodology.",
+            })
+        )
+
+        thoughts = orch._collect_thoughts()
+        assert thoughts == "Subdir thought about methodology."
+
+
+class _ThoughtsFakeBackend:
+    """Test double that writes result.json with thoughts field."""
+
+    def __init__(self, metrics: dict | None = None, thoughts: str | None = None):
+        self.metrics = metrics or {}
+        self.thoughts = thoughts
+        self.calls: list[dict] = []
+
+    def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
+        self.calls.append({"prompt": prompt, "cwd": str(cwd), "timeout": timeout})
+
+        results_dir = cwd / "results" / "infrastructure"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        result_data = {
+            "metrics": self.metrics,
+            "status": "success",
+        }
+        if self.thoughts is not None:
+            result_data["thoughts"] = self.thoughts
+        (results_dir / "result.json").write_text(json.dumps(result_data))
+
+        return RunResult(
+            success=True,
+            metrics=self.metrics,
+            stdout="fake output",
+            returncode=0,
+        )
+
+
+class TestThoughtsPostedToLinear:
+    """Tests that agent thoughts are posted as Linear comments after gate evaluation."""
+
+    def test_thoughts_posted_as_comment(self, tmp_path):
+        """After gate evaluation with thoughts, a thought comment is posted to Linear."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        # Responses: status update, gate comment, eli5 persist, desc update, thought comment
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment, canned_update, canned_comment]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        backend = _ThoughtsFakeBackend(
+            metrics=passing_metrics,
+            thoughts="The effect size is larger than expected. Consider testing on additional models.",
+        )
+        runner = AgentRunner(backend=backend)
+        from scaffold.linear import LinearClient
+        http_client = httpx.Client(transport=transport)
+        linear_client = LinearClient(api_key="test-key", client=http_client)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+            _linear_client=linear_client,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Find thought comment requests
+        thought_comment_requests = []
+        for req in transport.requests:
+            body = json.loads(req.content)
+            if "commentCreate" in body.get("query", ""):
+                comment_text = body["variables"]["input"]["body"]
+                if "Agent Notes" in comment_text:
+                    thought_comment_requests.append(body)
+
+        assert len(thought_comment_requests) >= 1
+        comment_body = thought_comment_requests[0]["variables"]["input"]["body"]
+        assert "Agent Notes" in comment_body
+        assert "The effect size is larger than expected" in comment_body
+
+    def test_no_thought_comment_when_no_thoughts(self, tmp_path):
+        """No thought comment is posted when result.json has no thoughts field."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment, canned_update]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        # Backend WITHOUT thoughts
+        backend = _ThoughtsFakeBackend(metrics=passing_metrics, thoughts=None)
+        runner = AgentRunner(backend=backend)
+        from scaffold.linear import LinearClient
+        http_client = httpx.Client(transport=transport)
+        linear_client = LinearClient(api_key="test-key", client=http_client)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=1,
+            _linear_client=linear_client,
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # No thought comments should exist
+        thought_comment_requests = []
+        for req in transport.requests:
+            body = json.loads(req.content)
+            if "commentCreate" in body.get("query", ""):
+                comment_text = body["variables"]["input"]["body"]
+                if "Agent Notes" in comment_text:
+                    thought_comment_requests.append(body)
+
+        assert len(thought_comment_requests) == 0

@@ -51,14 +51,34 @@ The following phases have already completed. Use these results to inform your wo
 
 {% raw %}
 {% if iteration == 1 and not completed_phases %}
-## Literature Review Pre-Check
+## Literature Review (Required Before Experiments)
 
-Before starting the first phase, confirm that `background-work/LITERATURE_REVIEW.md` has been completed. If it is still a template with placeholder text, complete the literature review FIRST:
+Before running any experiments, you MUST complete a comprehensive literature review. This is not optional.
 
-1. Search for prior work related to the research question
-2. Document what is known, what is unknown, and what this experiment will test that is new
-3. Record at least 3 relevant papers in `background-work/REFERENCES.md`
-4. Only then proceed to the experimental task below
+### Instructions
+
+1. **Search broadly** for prior work related to the research question. Use web search, arxiv, Google Scholar, and Semantic Scholar. Cast a wide net.
+2. **Find at least 10 directly relevant papers.** For each paper:
+   - Save a local copy (PDF or text summary) to `background-work/papers/`
+   - Record it in `background-work/REFERENCES.md` with title, year, key finding, and local path
+3. **Fill out `background-work/LITERATURE_REVIEW.md`** completely:
+   - **What is known:** Summarize the current state of knowledge with citations
+   - **What is unknown:** Identify specific gaps this experiment addresses
+   - **What this experiment tests that is new:** Describe the novel contribution
+   - **Methodological precedents:** Note methods used in prior work that inform our approach
+   - **Common pitfalls:** Document mistakes or limitations found in prior studies
+4. **Identify potential confounds** from the literature that could affect this experiment
+5. **Only then** proceed to the experimental task below
+
+### Why This Matters
+
+Skipping literature review leads to:
+- Duplicating existing work without knowing it
+- Missing known confounds that invalidate results
+- Misattributing findings that are already established
+- Using inferior methods when better approaches exist
+
+The literature review is a living document. Revisit it when results surprise you.
 {% endif %}
 {% endraw %}
 
@@ -112,6 +132,7 @@ Execute the dispatched task for phase `{{ phase }}`, lane `{{ lane }}`:
 - Identifying bugs or implementation errors early
 - Testing the full pipeline on a small scale before committing to expensive runs
 - Documenting confounds and edge cases discovered during exploration
+- Consulting `background-work/LITERATURE_REVIEW.md` to compare your preliminary results against prior work
 
 {% elif phase_type == "confirm" %}
 **Confirmatory phase.** Follow the pre-registered plan in `history/PREREG.md` exactly. Use the primary model and full sample size. Any deviation from the plan MUST be logged in `DECISIONS.md` with justification. Focus on:
@@ -119,6 +140,7 @@ Execute the dispatched task for phase `{{ phase }}`, lane `{{ lane }}`:
 - Reporting all pre-specified metrics, including null results
 - Applying multiple comparisons correction if running more than one statistical test
 - Documenting any post-hoc analyses separately from confirmatory results
+- Cross-referencing results with findings documented in `background-work/LITERATURE_REVIEW.md`
 
 {% elif phase_type == "review" %}
 **Review phase.** No new experiments. Synthesize findings from prior phases. Focus on:
@@ -175,11 +197,14 @@ After running experiments, you MUST write a `result.json` file in the experiment
   },
   "artifacts": ["path/to/artifact1.png", "path/to/data.csv"],
   "status": "success",
-  "eli5": "One paragraph, plain-language summary: what did this phase find? What was surprising or novel compared to existing work? What does it mean for the overall experiment? Write for someone unfamiliar with the specific methodology."
+  "eli5": "One paragraph, plain-language summary: what did this phase find? What was surprising or novel compared to existing work? What does it mean for the overall experiment? Write for someone unfamiliar with the specific methodology.",
+  "thoughts": "Optional: observations, suggestions, concerns, or questions for the human researcher. This will be posted as a comment on the experiment's tracking issue."
 }
 ```
 
 The `eli5` field is required. Write 2-4 sentences summarizing what this phase found in plain language. Focus on what is novel, surprising, or different from existing literature. Be honest about negative or null results.
+
+The `thoughts` field is optional. Use it to share observations, flag concerns, suggest methodology changes, ask questions, or note anything you think the researcher should know. These are posted as comments on the experiment tracking issue.
 
 The orchestrator evaluates gates mechanically from `result.json`. If a gate metric is missing, the gate cannot pass. Include all metrics listed in the Phase Gates section above.
 
