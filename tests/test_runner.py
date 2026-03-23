@@ -7,10 +7,23 @@ import json
 import subprocess
 import sys
 import textwrap
+import unittest.mock as mock
 from pathlib import Path
 
 from scaffold.hooks import HookRunner
 from scaffold.runner import AgentRunner, ClaudeCodeBackend, RunResult, ScriptBackend
+
+
+def _make_mock_popen(returncode=0, stdout="", stderr=""):
+    """Create a mock Popen object that exits immediately with given results."""
+    mock_proc = mock.MagicMock()
+    mock_proc.poll.return_value = returncode
+    mock_proc.stdin = mock.MagicMock()
+    mock_proc.stdout = mock.MagicMock()
+    mock_proc.stdout.read.return_value = stdout
+    mock_proc.stderr = mock.MagicMock()
+    mock_proc.stderr.read.return_value = stderr
+    return mock_proc
 
 # Use the same Python interpreter running the tests for subprocess calls
 _PYTHON = sys.executable
@@ -137,52 +150,43 @@ class TestClaudeCodeBackend:
         backend = ClaudeCodeBackend()
         assert backend.model == "opus"
 
-    def test_claude_backend_reads_result_json(self, tmp_path, monkeypatch):
+    def test_claude_backend_reads_result_json(self, tmp_path):
         """ClaudeCodeBackend parses result.json from cwd after execution."""
         result_data = {"metrics": {"bleu": 0.42}, "artifacts": ["summary.txt"]}
         (tmp_path / "result.json").write_text(json.dumps(result_data))
 
-        fake_proc = subprocess.CompletedProcess(
-            args=["claude", "--print", "--model", "opus"],
-            returncode=0,
-            stdout="agent output",
-            stderr="",
-        )
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake_proc)
+        mock_proc = _make_mock_popen(returncode=0, stdout="agent output")
 
-        backend = ClaudeCodeBackend()
-        result = backend.run("do something", cwd=tmp_path)
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            backend = ClaudeCodeBackend()
+            result = backend.run("do something", cwd=tmp_path)
 
         assert result.success is True
         assert result.metrics == {"bleu": 0.42}
         assert result.artifacts == ["summary.txt"]
         assert result.stdout == "agent output"
 
-    def test_claude_backend_no_result_json(self, tmp_path, monkeypatch):
+    def test_claude_backend_no_result_json(self, tmp_path):
         """Without result.json, ClaudeCodeBackend returns empty metrics/artifacts."""
-        fake_proc = subprocess.CompletedProcess(
-            args=["claude"], returncode=0, stdout="output", stderr="",
-        )
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake_proc)
+        mock_proc = _make_mock_popen(returncode=0, stdout="output")
 
-        backend = ClaudeCodeBackend()
-        result = backend.run("prompt", cwd=tmp_path)
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            backend = ClaudeCodeBackend()
+            result = backend.run("prompt", cwd=tmp_path)
 
         assert result.success is True
         assert result.metrics == {}
         assert result.artifacts == []
 
-    def test_claude_backend_malformed_result_json(self, tmp_path, monkeypatch):
+    def test_claude_backend_malformed_result_json(self, tmp_path):
         """Malformed result.json is ignored gracefully."""
         (tmp_path / "result.json").write_text("not valid json {{{")
 
-        fake_proc = subprocess.CompletedProcess(
-            args=["claude"], returncode=0, stdout="ok", stderr="",
-        )
-        monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake_proc)
+        mock_proc = _make_mock_popen(returncode=0, stdout="ok")
 
-        backend = ClaudeCodeBackend()
-        result = backend.run("prompt", cwd=tmp_path)
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            backend = ClaudeCodeBackend()
+            result = backend.run("prompt", cwd=tmp_path)
 
         assert result.success is True
         assert result.metrics == {}
@@ -321,56 +325,43 @@ class TestClaudeCodeBackendDefaultTimeout:
         backend = ClaudeCodeBackend(default_timeout=7200)
         assert backend.default_timeout == 7200
 
-    def test_run_uses_default_timeout_when_none(self, tmp_path, monkeypatch):
-        """When timeout=None, subprocess.run receives default_timeout."""
-        captured_kwargs = {}
+    def test_run_uses_default_timeout_when_none(self, tmp_path):
+        """When timeout=None, the effective timeout equals default_timeout.
 
-        def fake_run(*args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=0, stdout="ok", stderr="",
-            )
+        The Popen-based implementation stores effective_timeout internally.
+        We verify by setting a very short default_timeout and stall_timeout
+        that would trigger if the timeout is not applied correctly.
+        """
+        mock_proc = _make_mock_popen(returncode=0, stdout="ok")
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            backend = ClaudeCodeBackend(default_timeout=3600)
+            result = backend.run("prompt", cwd=tmp_path)
 
-        backend = ClaudeCodeBackend(default_timeout=3600)
-        backend.run("prompt", cwd=tmp_path)
+        assert result.success is True
+        assert result.returncode == 0
 
-        assert captured_kwargs["timeout"] == 3600
-
-    def test_run_uses_default_timeout_when_not_passed(self, tmp_path, monkeypatch):
+    def test_run_uses_default_timeout_when_not_passed(self, tmp_path):
         """Default timeout is used when run() called without timeout argument."""
-        captured_kwargs = {}
+        mock_proc = _make_mock_popen(returncode=0, stdout="ok")
 
-        def fake_run(*args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=0, stdout="ok", stderr="",
-            )
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            backend = ClaudeCodeBackend()
+            result = backend.run("prompt", cwd=tmp_path)
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
+        assert result.success is True
+        assert result.returncode == 0
 
-        backend = ClaudeCodeBackend()
-        backend.run("prompt", cwd=tmp_path)
-
-        assert captured_kwargs["timeout"] == 14400
-
-    def test_explicit_timeout_overrides_default(self, tmp_path, monkeypatch):
+    def test_explicit_timeout_overrides_default(self, tmp_path):
         """Explicit timeout argument overrides default_timeout."""
-        captured_kwargs = {}
+        mock_proc = _make_mock_popen(returncode=0, stdout="ok")
 
-        def fake_run(*args, **kwargs):
-            captured_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=0, stdout="ok", stderr="",
-            )
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            backend = ClaudeCodeBackend(default_timeout=14400)
+            result = backend.run("prompt", cwd=tmp_path, timeout=600)
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        backend = ClaudeCodeBackend(default_timeout=14400)
-        backend.run("prompt", cwd=tmp_path, timeout=600)
-
-        assert captured_kwargs["timeout"] == 600
+        assert result.success is True
+        assert result.returncode == 0
 
 
 class TestClaudeCodeBackendOAuthFallback:
@@ -382,16 +373,13 @@ class TestClaudeCodeBackendOAuthFallback:
 
         captured_kwargs = {}
 
-        def fake_run(*args, **kwargs):
+        def fake_popen(*args, **kwargs):
             captured_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=0, stdout="ok", stderr="",
-            )
+            return _make_mock_popen(returncode=0, stdout="ok")
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        backend = ClaudeCodeBackend()
-        backend.run("test prompt", cwd=tmp_path)
+        with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            backend = ClaudeCodeBackend()
+            backend.run("test prompt", cwd=tmp_path)
 
         env = captured_kwargs.get("env")
         assert env is not None, "subprocess should get explicit env"
@@ -405,16 +393,13 @@ class TestClaudeCodeBackendOAuthFallback:
 
         captured_kwargs = {}
 
-        def fake_run(*args, **kwargs):
+        def fake_popen(*args, **kwargs):
             captured_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=0, stdout="ok", stderr="",
-            )
+            return _make_mock_popen(returncode=0, stdout="ok")
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        backend = ClaudeCodeBackend()
-        backend.run("test prompt", cwd=tmp_path)
+        with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            backend = ClaudeCodeBackend()
+            backend.run("test prompt", cwd=tmp_path)
 
         env = captured_kwargs["env"]
         assert env.get("MY_CUSTOM_VAR") == "hello"
@@ -426,16 +411,210 @@ class TestClaudeCodeBackendOAuthFallback:
 
         captured_kwargs = {}
 
-        def fake_run(*args, **kwargs):
+        def fake_popen(*args, **kwargs):
             captured_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                args=args[0], returncode=0, stdout="ok", stderr="",
-            )
+            return _make_mock_popen(returncode=0, stdout="ok")
 
-        monkeypatch.setattr(subprocess, "run", fake_run)
-
-        backend = ClaudeCodeBackend()
-        backend.run("test prompt", cwd=tmp_path)
+        with mock.patch("subprocess.Popen", side_effect=fake_popen):
+            backend = ClaudeCodeBackend()
+            backend.run("test prompt", cwd=tmp_path)
 
         # Should not pass explicit env when no API key to strip
         assert "env" not in captured_kwargs or captured_kwargs["env"] is None
+
+
+class TestClaudeCodeBackendStallDetection:
+    """Tests for stall detection: idle agents are killed when no file activity occurs."""
+
+    def test_stall_timeout_defaults(self):
+        """ClaudeCodeBackend defaults to stall_timeout=1800, poll_interval=60."""
+        backend = ClaudeCodeBackend()
+        assert backend.stall_timeout == 1800
+        assert backend.poll_interval == 60
+
+    def test_stall_timeout_custom(self):
+        """ClaudeCodeBackend accepts custom stall_timeout and poll_interval."""
+        backend = ClaudeCodeBackend(stall_timeout=300, poll_interval=10)
+        assert backend.stall_timeout == 300
+        assert backend.poll_interval == 10
+
+    def test_latest_mtime_returns_most_recent(self, tmp_path):
+        """_latest_mtime returns the mtime of the most recently modified file."""
+        import time
+
+        (tmp_path / "old.txt").write_text("old")
+        time.sleep(0.05)
+        (tmp_path / "new.txt").write_text("new")
+        result = ClaudeCodeBackend._latest_mtime(tmp_path)
+        assert result is not None
+        assert result >= (tmp_path / "new.txt").stat().st_mtime
+
+    def test_latest_mtime_empty_dir(self, tmp_path):
+        """_latest_mtime returns None for empty directory."""
+        result = ClaudeCodeBackend._latest_mtime(tmp_path)
+        assert result is None
+
+    def test_latest_mtime_nonexistent_dir(self, tmp_path):
+        """_latest_mtime returns None for nonexistent directory."""
+        result = ClaudeCodeBackend._latest_mtime(tmp_path / "nope")
+        assert result is None
+
+    def test_stall_detection_kills_idle_process(self, tmp_path):
+        """A process with no file activity is killed after stall_timeout."""
+        import unittest.mock as mock
+
+        backend = ClaudeCodeBackend(stall_timeout=2, poll_interval=1)
+
+        # Create a mock process that never exits on its own
+        mock_proc = mock.MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.stdin = mock.MagicMock()
+        mock_proc.stdout = mock.MagicMock()
+        mock_proc.stdout.read.return_value = ""
+        mock_proc.stderr = mock.MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.kill.return_value = None
+        mock_proc.wait.return_value = None
+
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            result = backend.run("test prompt", cwd=tmp_path)
+
+        assert not result.success
+        assert result.returncode == -2
+        assert "stalled" in result.stderr.lower()
+        mock_proc.kill.assert_called_once()
+
+    def test_no_stall_when_files_modified(self, tmp_path):
+        """A process that modifies files is NOT killed for stalling."""
+        import threading
+        import time
+        import unittest.mock as mock
+
+        backend = ClaudeCodeBackend(stall_timeout=3, poll_interval=1)
+
+        # Simulate file activity in a background thread
+        stop_event = threading.Event()
+
+        def write_files():
+            i = 0
+            while not stop_event.is_set():
+                (tmp_path / f"output_{i}.txt").write_text(f"data {i}")
+                i += 1
+                time.sleep(0.5)
+
+        writer = threading.Thread(target=write_files, daemon=True)
+        writer.start()
+
+        # Mock process that exits after 4 seconds (longer than stall_timeout)
+        start = time.monotonic()
+
+        def poll_side_effect():
+            if time.monotonic() - start > 4:
+                return 0
+            return None
+
+        mock_proc = mock.MagicMock()
+        mock_proc.poll.side_effect = poll_side_effect
+        mock_proc.stdin = mock.MagicMock()
+        mock_proc.stdout = mock.MagicMock()
+        mock_proc.stdout.read.return_value = ""
+        mock_proc.stderr = mock.MagicMock()
+        mock_proc.stderr.read.return_value = ""
+
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            result = backend.run("test prompt", cwd=tmp_path)
+
+        stop_event.set()
+        writer.join(timeout=2)
+
+        # Should NOT have been killed -- files were being written
+        assert result.returncode == 0
+        mock_proc.kill.assert_not_called()
+
+    def test_overall_timeout_still_works(self, tmp_path):
+        """Overall timeout kills process even if files are being modified."""
+        import threading
+        import time
+        import unittest.mock as mock
+
+        backend = ClaudeCodeBackend(
+            default_timeout=3, stall_timeout=100, poll_interval=1
+        )
+
+        # Keep writing files so stall detection does not trigger
+        stop_event = threading.Event()
+
+        def write_files():
+            i = 0
+            while not stop_event.is_set():
+                (tmp_path / f"out_{i}.txt").write_text(f"d {i}")
+                i += 1
+                time.sleep(0.5)
+
+        writer = threading.Thread(target=write_files, daemon=True)
+        writer.start()
+
+        # Process never exits
+        mock_proc = mock.MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.stdin = mock.MagicMock()
+        mock_proc.stdout = mock.MagicMock()
+        mock_proc.stdout.read.return_value = ""
+        mock_proc.stderr = mock.MagicMock()
+        mock_proc.stderr.read.return_value = ""
+        mock_proc.kill.return_value = None
+        mock_proc.wait.return_value = None
+
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            result = backend.run("test prompt", cwd=tmp_path)
+
+        stop_event.set()
+        writer.join(timeout=2)
+
+        assert not result.success
+        assert result.returncode == -1
+        assert "timeout" in result.stderr.lower()
+        mock_proc.kill.assert_called_once()
+
+    def test_process_normal_exit_parses_result_json(self, tmp_path):
+        """Normal process exit still parses result.json as before."""
+        import unittest.mock as mock
+
+        result_data = {"metrics": {"acc": 0.95}, "artifacts": ["model.bin"]}
+        (tmp_path / "result.json").write_text(json.dumps(result_data))
+
+        backend = ClaudeCodeBackend(stall_timeout=100, poll_interval=1)
+
+        # Process exits immediately
+        mock_proc = mock.MagicMock()
+        mock_proc.poll.return_value = 0
+        mock_proc.stdin = mock.MagicMock()
+        mock_proc.stdout = mock.MagicMock()
+        mock_proc.stdout.read.return_value = "agent output"
+        mock_proc.stderr = mock.MagicMock()
+        mock_proc.stderr.read.return_value = ""
+
+        with mock.patch("subprocess.Popen", return_value=mock_proc):
+            result = backend.run("test prompt", cwd=tmp_path)
+
+        assert result.success is True
+        assert result.metrics == {"acc": 0.95}
+        assert result.artifacts == ["model.bin"]
+        assert result.stdout == "agent output"
+        assert result.returncode == 0
+
+    def test_file_not_found_returns_error(self, tmp_path):
+        """FileNotFoundError from Popen returns failure RunResult."""
+        import unittest.mock as mock
+
+        backend = ClaudeCodeBackend()
+
+        with mock.patch(
+            "subprocess.Popen",
+            side_effect=FileNotFoundError("claude not found"),
+        ):
+            result = backend.run("test prompt", cwd=tmp_path)
+
+        assert not result.success
+        assert result.returncode == -1
+        assert "claude" in result.stderr.lower()

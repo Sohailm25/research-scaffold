@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -80,50 +81,111 @@ class ScriptBackend:
 
 
 class ClaudeCodeBackend:
-    """Launches claude --print with a rendered prompt."""
+    """Launches claude --print with a rendered prompt and stall detection."""
 
-    def __init__(self, model: str = "opus", default_timeout: int = 14400):
+    def __init__(
+        self,
+        model: str = "opus",
+        default_timeout: int = 14400,
+        stall_timeout: int = 1800,
+        poll_interval: int = 60,
+    ):
         self.model = model
         self.default_timeout = default_timeout
+        self.stall_timeout = stall_timeout
+        self.poll_interval = poll_interval
 
     def run(self, prompt: str, cwd: Path, timeout: int | None = None) -> RunResult:
-        """Run claude --print with the given prompt.
+        """Run claude --print with stall detection.
 
-        Uses --dangerously-skip-permissions so the agent can use tools
-        (Read, Write, Bash, etc.) in non-interactive mode.
+        Uses Popen with polling to detect stalled agents. If no file in cwd
+        is modified for stall_timeout seconds, the agent is killed and a
+        failure is returned.
         """
         # Strip ANTHROPIC_API_KEY so claude CLI uses OAuth instead of API credits
         env = None
         if os.environ.get("ANTHROPIC_API_KEY"):
             env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
 
+        effective_timeout = timeout if timeout is not None else self.default_timeout
+
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 [
                     "claude", "--print",
                     "--model", self.model,
                     "--dangerously-skip-permissions",
                 ],
-                input=prompt,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=cwd,
-                capture_output=True,
                 text=True,
-                timeout=timeout if timeout is not None else self.default_timeout,
                 env=env,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            stderr = ""
-            if isinstance(exc, subprocess.TimeoutExpired):
-                stderr = "Timeout expired"
-            else:
-                stderr = f"claude CLI not found: {exc}"
+        except FileNotFoundError as exc:
             return RunResult(
                 success=False,
-                stdout="",
-                stderr=stderr,
+                stderr=f"claude CLI not found: {exc}",
                 returncode=-1,
             )
 
+        # Write prompt to stdin and close it
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError:
+            pass
+
+        start_time = time.monotonic()
+        last_activity = start_time
+
+        while True:
+            # Check if process has exited
+            retcode = proc.poll()
+            if retcode is not None:
+                stdout = proc.stdout.read() if proc.stdout else ""
+                stderr = proc.stderr.read() if proc.stderr else ""
+                break
+
+            # Check overall timeout
+            elapsed = time.monotonic() - start_time
+            if elapsed > effective_timeout:
+                proc.kill()
+                proc.wait()
+                stdout = proc.stdout.read() if proc.stdout else ""
+                stderr = proc.stderr.read() if proc.stderr else ""
+                return RunResult(
+                    success=False,
+                    stdout=stdout,
+                    stderr="Timeout expired",
+                    returncode=-1,
+                )
+
+            # Check file activity (stall detection)
+            try:
+                latest_mtime = self._latest_mtime(cwd)
+                if latest_mtime is not None and latest_mtime > last_activity:
+                    last_activity = time.monotonic()
+            except OSError:
+                pass
+
+            stall_duration = time.monotonic() - last_activity
+            if stall_duration > self.stall_timeout:
+                proc.kill()
+                proc.wait()
+                stdout = proc.stdout.read() if proc.stdout else ""
+                stderr = proc.stderr.read() if proc.stderr else ""
+                return RunResult(
+                    success=False,
+                    stdout=stdout,
+                    stderr=f"Agent stalled: no file activity for {self.stall_timeout} seconds",
+                    returncode=-2,
+                )
+
+            time.sleep(self.poll_interval)
+
+        # Process exited normally -- parse result.json
         metrics: dict = {}
         artifacts: list[str] = []
 
@@ -137,13 +199,30 @@ class ClaudeCodeBackend:
                 pass
 
         return RunResult(
-            success=proc.returncode == 0,
+            success=retcode == 0,
             metrics=metrics,
             artifacts=artifacts,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-            returncode=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            returncode=retcode,
         )
+
+    @staticmethod
+    def _latest_mtime(directory: Path) -> float | None:
+        """Return the most recent mtime of any file in directory, or None."""
+        latest = None
+        try:
+            for f in directory.rglob("*"):
+                if f.is_file():
+                    try:
+                        mt = f.stat().st_mtime
+                        if latest is None or mt > latest:
+                            latest = mt
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        return latest
 
 
 class AgentRunner:
