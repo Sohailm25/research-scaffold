@@ -135,6 +135,56 @@ class LinearClient:
     }
 
     @staticmethod
+    def format_progress_section(phase_states: list[dict]) -> str:
+        """Build a visual progress section for the issue description.
+
+        Args:
+            phase_states: list of dicts with 'name', 'status', and optionally
+                          'iteration_count' keys.
+        """
+        total = len(phase_states)
+        completed = sum(1 for ps in phase_states if ps.get("status") == "COMPLETED")
+
+        lines = []
+        lines.append("## Progress\n")
+
+        # Progress bar: [========>          ] 2/5 phases
+        if total > 0:
+            filled = int((completed / total) * 20)
+            bar = "=" * filled
+            if filled < 20 and completed < total:
+                bar += ">"
+            bar = bar.ljust(20)
+            lines.append(f"`[{bar}]` **{completed}/{total} phases complete**\n")
+
+        # Phase list with status icons
+        for i, ps in enumerate(phase_states, 1):
+            status = ps.get("status", "NOT_STARTED")
+            name = ps.get("name", "?")
+            iteration = ps.get("iteration_count", 0)
+
+            if status == "COMPLETED":
+                icon = "DONE"
+                detail = ""
+            elif status in ("IN_PROGRESS", "GATE_CHECK"):
+                icon = "RUNNING"
+                detail = f" (iteration {iteration})" if iteration > 0 else ""
+            elif status == "GATE_FAILED":
+                icon = "RETRY"
+                detail = f" (iteration {iteration})" if iteration > 0 else ""
+            elif status == "HUMAN_REVIEW":
+                icon = "REVIEW"
+                detail = ""
+            else:
+                icon = "PENDING"
+                detail = ""
+
+            lines.append(f"{i}. **[{icon}]** {name}{detail}")
+
+        lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
     def format_experiment_description(config) -> str:
         """Build a human-readable Linear issue description from experiment config."""
         lines = []
@@ -323,3 +373,26 @@ class LinearClient:
             if exp["title"] == title:
                 return exp["id"]
         return None
+
+    def update_experiment_description(
+        self, issue_id: str, config, phase_states: list[dict]
+    ) -> None:
+        """Update the issue description with current progress and config info."""
+        progress = self.format_progress_section(phase_states)
+        static_content = self.format_experiment_description(config)
+        full_description = progress + "\n---\n\n" + static_content
+
+        mutation = """
+        mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+            issueUpdate(id: $id, input: $input) {
+                success
+            }
+        }
+        """
+        variables = {
+            "id": issue_id,
+            "input": {"description": full_description},
+        }
+        data = self._query(mutation, variables)
+        if not data.get("issueUpdate", {}).get("success"):
+            raise LinearAPIError(f"Failed to update issue {issue_id}")

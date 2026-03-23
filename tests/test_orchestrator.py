@@ -1247,3 +1247,64 @@ class TestInterPhaseContext:
         assert len(backend.captured_prompts) >= 1
         first_prompt = backend.captured_prompts[0]
         assert "PRIOR RESULTS" not in first_prompt
+
+
+# --- Progress Dashboard (update_experiment_description) ---
+
+
+class TestOrchestratorProgressDashboard:
+    """Tests that orchestrator calls update_experiment_description after gate evaluation."""
+
+    def test_update_experiment_description_called_after_gate_eval(self, tmp_path):
+        """After gate evaluation, update_experiment_description is called on Linear client."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        # Need responses for: status update, gate comment, description update
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment, canned_update]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=passing_metrics, max_iterations=1
+        )
+
+        orch.run_phase("phase1_oracle_alpha")
+
+        # Find the description update request (issueUpdate with description field)
+        desc_update_requests = []
+        for req in transport.requests:
+            body = json.loads(req.content)
+            if "issueUpdate" in body.get("query", ""):
+                inp = body.get("variables", {}).get("input", {})
+                if "description" in inp:
+                    desc_update_requests.append(body)
+
+        assert len(desc_update_requests) >= 1, (
+            "update_experiment_description should be called after gate evaluation"
+        )
+        description = desc_update_requests[0]["variables"]["input"]["description"]
+        assert "## Progress" in description
+
+    def test_description_update_failure_does_not_block_phase(self, tmp_path):
+        """If update_experiment_description fails, the phase still completes."""
+        canned_update = {"data": {"issueUpdate": {"success": True}}}
+        canned_comment = {"data": {"commentCreate": {"success": True}}}
+        # Description update fails
+        canned_desc_fail = {"data": {"issueUpdate": {"success": False}}}
+        transport = _FakeLinearTransport(
+            responses=[canned_update, canned_comment, canned_desc_fail]
+        )
+        exp_dir = _create_experiment_with_linear(tmp_path, transport)
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+        orch, _ = _make_orchestrator_with_linear(
+            exp_dir, transport, metrics=passing_metrics, max_iterations=1
+        )
+
+        result = orch.run_phase("phase1_oracle_alpha")
+
+        # Phase should still complete despite description update failure
+        assert result.gate_passed is True
+        state = ExperimentState.load(exp_dir / ".scaffold" / "state.json")
+        phase = state._find_phase("phase1_oracle_alpha")
+        assert phase.status == "COMPLETED"

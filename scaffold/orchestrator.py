@@ -263,6 +263,24 @@ class Orchestrator:
                 except Exception:
                     pass
 
+            # Update issue description with current progress
+            if self._linear_client and self._linear_issue_id:
+                try:
+                    self._linear_client.update_experiment_description(
+                        self._linear_issue_id,
+                        self.config,
+                        [
+                            {
+                                "name": ps.name,
+                                "status": ps.status,
+                                "iteration_count": ps.iteration_count,
+                            }
+                            for ps in self.state.phases
+                        ],
+                    )
+                except Exception:
+                    pass
+
             if report.overall_pass:
                 # Gates passed
                 self.state.advance_phase(phase_name, "GATE_PASSED")

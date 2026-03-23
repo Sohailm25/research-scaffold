@@ -989,3 +989,188 @@ class TestAddPhaseCommentWithPhaseStates:
         assert "[current]" in comment_body
         assert "[retry]" in comment_body
         assert "[pending]" in comment_body
+
+
+# --- format_progress_section ---
+
+
+class TestFormatProgressSection:
+    """LinearClient.format_progress_section produces a visual progress dashboard."""
+
+    def test_all_pending(self):
+        """All NOT_STARTED phases show PENDING icons and 0/N complete."""
+        phase_states = [
+            {"name": "phase1", "status": "NOT_STARTED"},
+            {"name": "phase2", "status": "NOT_STARTED"},
+            {"name": "phase3", "status": "NOT_STARTED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "0/3 phases complete" in result
+        assert "[PENDING]" in result
+        # Progress bar should be empty (no filled segments)
+        assert "[>                   ]" in result
+
+    def test_one_completed(self):
+        """One completed phase shows correct bar and DONE icon."""
+        phase_states = [
+            {"name": "phase1", "status": "COMPLETED"},
+            {"name": "phase2", "status": "NOT_STARTED"},
+            {"name": "phase3", "status": "NOT_STARTED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "1/3 phases complete" in result
+        assert "[DONE]" in result
+        assert "[PENDING]" in result
+        # Progress bar: 1/3 * 20 = 6 filled + '>'
+        assert "[======>             ]" in result
+
+    def test_mixed_states(self):
+        """Mixed states show correct icons for each."""
+        phase_states = [
+            {"name": "phase1", "status": "COMPLETED"},
+            {"name": "phase2", "status": "IN_PROGRESS", "iteration_count": 3},
+            {"name": "phase3", "status": "NOT_STARTED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "[DONE]" in result
+        assert "[RUNNING]" in result
+        assert "(iteration 3)" in result
+        assert "[PENDING]" in result
+
+    def test_gate_failed_shows_retry(self):
+        """GATE_FAILED status shows RETRY icon with iteration count."""
+        phase_states = [
+            {"name": "phase1", "status": "COMPLETED"},
+            {"name": "phase2", "status": "GATE_FAILED", "iteration_count": 5},
+            {"name": "phase3", "status": "NOT_STARTED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "[RETRY]" in result
+        assert "(iteration 5)" in result
+
+    def test_human_review_shows_review(self):
+        """HUMAN_REVIEW status shows REVIEW icon."""
+        phase_states = [
+            {"name": "phase1", "status": "COMPLETED"},
+            {"name": "phase2", "status": "HUMAN_REVIEW"},
+            {"name": "phase3", "status": "NOT_STARTED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "[REVIEW]" in result
+
+    def test_gate_check_shows_running(self):
+        """GATE_CHECK status shows RUNNING icon."""
+        phase_states = [
+            {"name": "phase1", "status": "GATE_CHECK", "iteration_count": 2},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "[RUNNING]" in result
+        assert "(iteration 2)" in result
+
+    def test_empty_list(self):
+        """Empty phase list returns just the header."""
+        result = LinearClient.format_progress_section([])
+        assert "## Progress" in result
+        # No progress bar or phase lines
+        assert "phases complete" not in result
+
+    def test_all_completed(self):
+        """All completed shows full bar."""
+        phase_states = [
+            {"name": "phase1", "status": "COMPLETED"},
+            {"name": "phase2", "status": "COMPLETED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "2/2 phases complete" in result
+        assert "[====================]" in result
+
+    def test_numbered_phase_list(self):
+        """Phases are numbered starting from 1."""
+        phase_states = [
+            {"name": "alpha", "status": "COMPLETED"},
+            {"name": "beta", "status": "NOT_STARTED"},
+        ]
+        result = LinearClient.format_progress_section(phase_states)
+        assert "1. **[DONE]** alpha" in result
+        assert "2. **[PENDING]** beta" in result
+
+
+# --- update_experiment_description ---
+
+
+class TestUpdateExperimentDescription:
+    """LinearClient.update_experiment_description sends combined progress + static description."""
+
+    @pytest.fixture
+    def config(self):
+        """Build a minimal ExperimentConfig for description formatting tests."""
+        from scaffold.config import (
+            ExperimentConfig,
+            GateConfig,
+            HypothesesConfig,
+            ModelConfig,
+            ModelsConfig,
+            NullModelConfig,
+            PhaseConfig,
+            RuntimeConfig,
+        )
+        return ExperimentConfig(
+            name="test-exp",
+            thesis="Transformers contain latent routing.",
+            research_question="Does X cause Y?",
+            models=ModelsConfig(
+                development=ModelConfig(name="gpt2", purpose="fast_iteration"),
+                primary=ModelConfig(name="gemma-2-2b", purpose="main_results"),
+            ),
+            runtime=RuntimeConfig(),
+            hypotheses=HypothesesConfig(primary="H1 statement"),
+            null_models=[],
+            phases=[
+                PhaseConfig(
+                    name="phase1_oracle",
+                    description="Compute oracle weights",
+                    gates=[
+                        GateConfig(metric="cross_entropy_delta", threshold=0.01, comparator="gte"),
+                    ],
+                    phase_type="pilot",
+                ),
+            ],
+            required_lanes=["oracle_alpha"],
+            statistics={"clustering_distance": "jsd"},
+            framing_locks=["non-causal language"],
+            guardrails=["no causation"],
+        )
+
+    def test_calls_query_with_combined_description(self, config):
+        """update_experiment_description sends a mutation with progress + static content."""
+        canned = {"data": {"issueUpdate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        phase_states = [
+            {"name": "phase1_oracle", "status": "COMPLETED", "iteration_count": 1},
+        ]
+        client.update_experiment_description("issue-42", config, phase_states)
+
+        assert len(transport.requests) == 1
+        body = json.loads(transport.requests[0].content)
+        assert "issueUpdate" in body["query"]
+        description = body["variables"]["input"]["description"]
+
+        # Should contain progress section
+        assert "## Progress" in description
+        assert "[DONE]" in description
+        # Should contain static config section
+        assert "Does X cause Y?" in description
+        # Should have separator
+        assert "---" in description
+
+    def test_raises_on_failure(self, config):
+        """Raises LinearAPIError if the update fails."""
+        canned = {"data": {"issueUpdate": {"success": False}}}
+        client, transport = _make_client(responses=[canned])
+
+        phase_states = [
+            {"name": "phase1_oracle", "status": "NOT_STARTED"},
+        ]
+        with pytest.raises(LinearAPIError, match="Failed to update issue"):
+            client.update_experiment_description("issue-42", config, phase_states)
