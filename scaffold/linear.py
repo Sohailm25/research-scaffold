@@ -134,6 +134,54 @@ class LinearClient:
         "eq": "=",
     }
 
+    @staticmethod
+    def format_experiment_description(config) -> str:
+        """Build a human-readable Linear issue description from experiment config."""
+        lines = []
+
+        # Research question
+        lines.append("## Research Question\n")
+        lines.append(f"{config.research_question}\n")
+
+        # Thesis
+        lines.append("## Thesis\n")
+        lines.append(f"{config.thesis}\n")
+
+        # Models
+        lines.append("## Models\n")
+        lines.append(f"- **Primary:** {config.models.primary.name} ({config.models.primary.purpose})")
+        lines.append(f"- **Development:** {config.models.development.name} ({config.models.development.purpose})")
+        if config.models.secondary:
+            lines.append(f"- **Secondary:** {config.models.secondary.name} ({config.models.secondary.purpose})")
+        lines.append("")
+
+        # Phase roadmap
+        lines.append("## Phase Roadmap\n")
+        for i, phase in enumerate(config.phases, 1):
+            phase_type_label = f" [{phase.phase_type}]" if phase.phase_type else ""
+            lines.append(f"### {i}. {phase.name}{phase_type_label}\n")
+            lines.append(f"{phase.description}\n")
+            if phase.gates:
+                lines.append("**Gates:**")
+                for g in phase.gates:
+                    symbol = LinearClient._COMPARATOR_SYMBOLS.get(g.comparator, g.comparator)
+                    lines.append(f"- `{g.metric}` {symbol} {g.threshold}")
+                lines.append("")
+            if phase.requires_human_review:
+                lines.append("*Requires human review before advancing.*\n")
+            if phase.depends_on:
+                lines.append(f"*Depends on:* {', '.join(phase.depends_on)}\n")
+
+        # Null models
+        if config.null_models:
+            lines.append("## Null Models\n")
+            for nm in config.null_models:
+                desc = f" -- {nm.description}" if nm.description else ""
+                lines.append(f"- **{nm.name}**{desc}")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def add_phase_comment(
         self,
         issue_id: str,
@@ -141,6 +189,7 @@ class LinearClient:
         gate_report: dict,
         iteration: int | None = None,
         max_iterations: int | None = None,
+        phase_states: list[dict] | None = None,
     ) -> None:
         """Post phase gate results as a comment on the experiment issue."""
         results = gate_report.get("results", [])
@@ -200,6 +249,21 @@ class LinearClient:
             body += "*Next: Orchestrator will retry. Aborts after 3 consecutive agent failures.*\n"
         else:
             body += "*Next: Orchestrator will retry with feedback about what failed.*\n"
+
+        if phase_states:
+            body += "\n---\n\n### Experiment Progress\n\n"
+            for ps in phase_states:
+                status = ps.get("status", "NOT_STARTED")
+                name = ps.get("name", "?")
+                if status == "COMPLETED":
+                    icon = "done"
+                elif status in ("IN_PROGRESS", "GATE_CHECK"):
+                    icon = "current"
+                elif status == "GATE_FAILED":
+                    icon = "retry"
+                else:
+                    icon = "pending"
+                body += f"- [{icon}] {name}: {status}\n"
 
         mutation = """
         mutation CreateComment($input: CommentCreateInput!) {

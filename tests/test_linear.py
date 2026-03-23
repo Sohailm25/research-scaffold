@@ -769,3 +769,223 @@ class TestErrorHandling:
 
         req = transport.requests[0]
         assert req.headers["content-type"] == "application/json"
+
+
+# --- format_experiment_description ---
+
+
+class TestFormatExperimentDescription:
+    """LinearClient.format_experiment_description produces markdown from config."""
+
+    @pytest.fixture
+    def config(self):
+        """Build a minimal ExperimentConfig for description formatting tests."""
+        from scaffold.config import (
+            ExperimentConfig,
+            GateConfig,
+            HypothesesConfig,
+            ModelConfig,
+            ModelsConfig,
+            NullModelConfig,
+            PhaseConfig,
+            RuntimeConfig,
+        )
+        return ExperimentConfig(
+            name="test-exp",
+            thesis="Transformers contain latent routing.",
+            research_question="Does X cause Y?",
+            models=ModelsConfig(
+                development=ModelConfig(name="gpt2", purpose="fast_iteration"),
+                primary=ModelConfig(name="gemma-2-2b", purpose="main_results"),
+            ),
+            runtime=RuntimeConfig(),
+            hypotheses=HypothesesConfig(primary="H1 statement"),
+            null_models=[
+                NullModelConfig(name="uniform", description="Equal weight to all layers"),
+                NullModelConfig(name="random_dirichlet", description="Random Dirichlet"),
+            ],
+            phases=[
+                PhaseConfig(
+                    name="phase1_oracle",
+                    description="Compute oracle weights",
+                    gates=[
+                        GateConfig(metric="cross_entropy_delta", threshold=0.01, comparator="gte"),
+                        GateConfig(metric="p_value", threshold=0.01, comparator="lte"),
+                    ],
+                    phase_type="pilot",
+                ),
+                PhaseConfig(
+                    name="phase2_patterns",
+                    description="Analyze routing patterns",
+                    gates=[
+                        GateConfig(metric="silhouette_score", threshold=0.2, comparator="gte"),
+                    ],
+                    requires_human_review=True,
+                    depends_on=["phase1_oracle"],
+                    phase_type="confirm",
+                ),
+            ],
+            required_lanes=["oracle_alpha", "patterns"],
+            statistics={"clustering_distance": "jsd"},
+            framing_locks=["non-causal language"],
+            guardrails=["no causation"],
+        )
+
+    def test_contains_research_question(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "Does X cause Y?" in result
+
+    def test_contains_thesis(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "Transformers contain latent routing." in result
+
+    def test_contains_phase_names(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "phase1_oracle" in result
+        assert "phase2_patterns" in result
+
+    def test_contains_gate_thresholds(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert ">= 0.01" in result
+        assert "<= 0.01" in result
+        assert ">= 0.2" in result
+
+    def test_contains_model_names(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "gpt2" in result
+        assert "gemma-2-2b" in result
+
+    def test_contains_null_models(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "uniform" in result
+        assert "random_dirichlet" in result
+
+    def test_handles_no_null_models(self, config):
+        config.null_models = []
+        result = LinearClient.format_experiment_description(config)
+        assert "Research Question" in result
+        assert "Null Models" not in result
+
+    def test_handles_secondary_model(self, config):
+        from scaffold.config import ModelConfig
+        config.models.secondary = ModelConfig(name="llama-3", purpose="cross_validation")
+        result = LinearClient.format_experiment_description(config)
+        assert "llama-3" in result
+        assert "cross_validation" in result
+
+    def test_contains_phase_type_labels(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "[pilot]" in result
+        assert "[confirm]" in result
+
+    def test_contains_depends_on(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "phase1_oracle" in result  # in depends_on for phase2
+
+    def test_contains_human_review_note(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert "human review" in result.lower()
+
+    def test_returns_string(self, config):
+        result = LinearClient.format_experiment_description(config)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+# --- add_phase_comment with phase_states ---
+
+
+class TestAddPhaseCommentWithPhaseStates:
+    """add_phase_comment includes experiment progress when phase_states provided."""
+
+    def test_phase_states_included_in_comment(self):
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": True,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "PASS",
+                    "observed_value": 0.95,
+                    "threshold": 0.90,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        phase_states = [
+            {"name": "phase1_oracle", "status": "COMPLETED"},
+            {"name": "phase2_patterns", "status": "IN_PROGRESS"},
+            {"name": "phase3_writeup", "status": "NOT_STARTED"},
+        ]
+        client.add_phase_comment(
+            "issue-42", "phase2_patterns", gate_report,
+            phase_states=phase_states,
+        )
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "Experiment Progress" in comment_body
+        assert "phase1_oracle" in comment_body
+        assert "COMPLETED" in comment_body
+        assert "phase2_patterns" in comment_body
+        assert "IN_PROGRESS" in comment_body
+        assert "phase3_writeup" in comment_body
+        assert "NOT_STARTED" in comment_body
+
+    def test_no_phase_states_no_progress_section(self):
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": True,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "PASS",
+                    "observed_value": 0.95,
+                    "threshold": 0.90,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        client.add_phase_comment("issue-42", "phase1", gate_report)
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "Experiment Progress" not in comment_body
+
+    def test_phase_states_shows_status_icons(self):
+        canned = {"data": {"commentCreate": {"success": True}}}
+        client, transport = _make_client(responses=[canned])
+
+        gate_report = {
+            "overall_pass": False,
+            "results": [
+                {
+                    "metric": "accuracy",
+                    "status": "FAIL",
+                    "observed_value": 0.50,
+                    "threshold": 0.90,
+                    "comparator": "gte",
+                },
+            ],
+        }
+        phase_states = [
+            {"name": "phase1", "status": "COMPLETED"},
+            {"name": "phase2", "status": "GATE_CHECK"},
+            {"name": "phase3", "status": "GATE_FAILED"},
+            {"name": "phase4", "status": "NOT_STARTED"},
+        ]
+        client.add_phase_comment(
+            "issue-42", "phase2", gate_report,
+            phase_states=phase_states,
+        )
+
+        body = json.loads(transport.requests[0].content)
+        comment_body = body["variables"]["input"]["body"]
+        assert "[done]" in comment_body
+        assert "[current]" in comment_body
+        assert "[retry]" in comment_body
+        assert "[pending]" in comment_body

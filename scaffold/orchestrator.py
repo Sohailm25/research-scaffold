@@ -255,6 +255,10 @@ class Orchestrator:
                             self._linear_issue_id, phase_name, gate_report_dict,
                             iteration=iterations,
                             max_iterations=self.max_iterations,
+                            phase_states=[
+                                {"name": ps.name, "status": ps.status}
+                                for ps in self.state.phases
+                            ],
                         )
                 except Exception:
                     pass

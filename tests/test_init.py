@@ -605,7 +605,10 @@ class TestLinearIntegration:
         assert len(transport.requests) == 2
         body = json.loads(transport.requests[1].content)
         assert body["variables"]["input"]["title"] == config.name
-        assert body["variables"]["input"]["description"] == config.research_question
+        # Description is now rich markdown from format_experiment_description
+        description = body["variables"]["input"]["description"]
+        assert config.research_question in description
+        assert "## Research Question" in description
 
     def test_init_linear_failure_graceful(self, tmp_path: Path, config: ExperimentConfig):
         """Linear failure does not prevent experiment initialization."""
@@ -709,3 +712,52 @@ class TestLiteratureReview:
         """Rendered file has the 'What This Experiment Will Test That Is New' section."""
         content = (experiment_dir / "background-work" / "LITERATURE_REVIEW.md").read_text()
         assert "## What This Experiment Will Test" in content
+
+
+# --- Rich Description in Linear Issue ---
+
+
+class TestRichDescriptionInLinearIssue:
+    """init_experiment passes formatted description to create_experiment_issue."""
+
+    def test_create_experiment_issue_gets_rich_description(self, tmp_path: Path, config: ExperimentConfig):
+        """create_experiment_issue receives format_experiment_description output, not just research_question."""
+        canned_list = {
+            "data": {
+                "project": {
+                    "issues": {"nodes": []}
+                }
+            }
+        }
+        canned_create = {
+            "data": {
+                "issueCreate": {
+                    "success": True,
+                    "issue": {"id": "issue-rich-desc"},
+                }
+            }
+        }
+        transport = _FakeTransport(responses=[canned_list, canned_create])
+        http_client = httpx.Client(transport=transport)
+
+        from scaffold.linear import LinearClient
+
+        result = init_experiment(
+            config, root=tmp_path, skip_external=False,
+            _linear_client=LinearClient(api_key="test-key", client=http_client),
+        )
+
+        # The create_experiment_issue call is the second request
+        body = json.loads(transport.requests[1].content)
+        description = body["variables"]["input"]["description"]
+
+        # Rich description should contain structured sections, not just the research question
+        assert "## Research Question" in description
+        assert "## Thesis" in description
+        assert "## Phase Roadmap" in description
+        assert config.research_question in description
+        assert config.thesis in description
+
+        # Should contain phase names
+        for phase in config.phases:
+            assert phase.name in description

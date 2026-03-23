@@ -271,9 +271,11 @@ def init_experiment(
                 pass
 
             if issue_id is None:
+                from scaffold.linear import LinearClient
+                description = LinearClient.format_experiment_description(config)
                 issue_id = linear.create_experiment_issue(
                     title=experiment_name,
-                    description=config.research_question,
+                    description=description,
                 )
             linear_json_path = exp_dir / ".scaffold" / "linear.json"
             linear_json_path.write_text(json.dumps({"issue_id": issue_id}) + "\n")
