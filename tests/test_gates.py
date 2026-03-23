@@ -248,3 +248,133 @@ class TestEvaluatePhaseGates:
         assert len(report.failures) == 1
         assert report.failures[0].gate.metric == "fail_metric"
         assert all(f.status == "FAIL" for f in report.failures)
+
+
+# --- Near-miss detection ---
+
+
+class TestNearMissDetection:
+    """Tests for near-miss detection on gate results."""
+
+    def test_gte_near_miss_within_10_percent(self):
+        """FAIL within 10% of threshold has near_miss=True (gte comparator)."""
+        # threshold=0.65, margin=0.065, near miss if observed >= 0.585
+        gate = GateConfig(metric="score", threshold=0.65, comparator="gte")
+        result = evaluate_gate(gate, {"score": 0.6085})
+        assert result.status == "FAIL"
+        assert result.near_miss is True
+
+    def test_gte_far_miss_not_near(self):
+        """FAIL far from threshold has near_miss=False (gte comparator)."""
+        gate = GateConfig(metric="score", threshold=0.65, comparator="gte")
+        result = evaluate_gate(gate, {"score": 0.1})
+        assert result.status == "FAIL"
+        assert result.near_miss is False
+
+    def test_pass_never_near_miss(self):
+        """PASS results always have near_miss=False."""
+        gate = GateConfig(metric="score", threshold=0.65, comparator="gte")
+        result = evaluate_gate(gate, {"score": 0.8})
+        assert result.status == "PASS"
+        assert result.near_miss is False
+
+    def test_skip_never_near_miss(self):
+        """SKIP results always have near_miss=False."""
+        gate = GateConfig(metric="score", threshold=0.65, comparator="gte")
+        result = evaluate_gate(gate, {"other": 0.6})
+        assert result.status == "SKIP"
+        assert result.near_miss is False
+
+    def test_lte_near_miss(self):
+        """FAIL within 10% of threshold has near_miss=True (lte comparator)."""
+        # threshold=0.25, margin=0.025, near miss if observed <= 0.275
+        gate = GateConfig(metric="pval", threshold=0.25, comparator="lte")
+        result = evaluate_gate(gate, {"pval": 0.27})
+        assert result.status == "FAIL"
+        assert result.near_miss is True
+
+    def test_lte_far_miss(self):
+        """FAIL far from threshold has near_miss=False (lte comparator)."""
+        gate = GateConfig(metric="pval", threshold=0.25, comparator="lte")
+        result = evaluate_gate(gate, {"pval": 0.5})
+        assert result.status == "FAIL"
+        assert result.near_miss is False
+
+    def test_zero_threshold_uses_minimum_margin(self):
+        """Threshold of 0 uses minimum margin of 0.01."""
+        # threshold=0.0, margin=max(0.0*0.1, 0.01)=0.01
+        # gt comparator: near miss if observed >= 0.0 - 0.01 = -0.01
+        gate = GateConfig(metric="delta", threshold=0.0, comparator="gt")
+        result = evaluate_gate(gate, {"delta": 0.0})
+        assert result.status == "FAIL"
+        assert result.near_miss is True
+
+    def test_eq_near_miss(self):
+        """FAIL within 10% of threshold has near_miss=True (eq comparator)."""
+        # threshold=100.0, margin=10.0, near miss if abs(observed - 100) <= 10
+        gate = GateConfig(metric="count", threshold=100.0, comparator="eq")
+        result = evaluate_gate(gate, {"count": 95.0})
+        assert result.status == "FAIL"
+        assert result.near_miss is True
+
+    def test_eq_far_miss(self):
+        """FAIL far from threshold has near_miss=False (eq comparator)."""
+        gate = GateConfig(metric="count", threshold=100.0, comparator="eq")
+        result = evaluate_gate(gate, {"count": 50.0})
+        assert result.status == "FAIL"
+        assert result.near_miss is False
+
+    def test_gt_near_miss(self):
+        """FAIL within margin for gt comparator has near_miss=True."""
+        # threshold=1.0, margin=0.1, near miss if observed >= 0.9
+        gate = GateConfig(metric="delta", threshold=1.0, comparator="gt")
+        result = evaluate_gate(gate, {"delta": 1.0})
+        assert result.status == "FAIL"
+        assert result.near_miss is True
+
+    def test_lt_near_miss(self):
+        """FAIL within margin for lt comparator has near_miss=True."""
+        # threshold=1.0, margin=0.1, near miss if observed <= 1.1
+        gate = GateConfig(metric="error", threshold=1.0, comparator="lt")
+        result = evaluate_gate(gate, {"error": 1.0})
+        assert result.status == "FAIL"
+        assert result.near_miss is True
+
+
+class TestPhaseGateReportNearMisses:
+    """Tests for near_misses list on PhaseGateReport."""
+
+    def test_near_misses_list_populated(self):
+        """PhaseGateReport.near_misses contains only near-miss FAIL results."""
+        gates = [
+            GateConfig(metric="close_metric", threshold=0.65, comparator="gte"),
+            GateConfig(metric="far_metric", threshold=0.65, comparator="gte"),
+        ]
+        phase = PhaseConfig(name="p1", description="test", gates=gates)
+        # close_metric=0.6085 is within 10%, far_metric=0.1 is not
+        metrics = {"close_metric": 0.6085, "far_metric": 0.1}
+        report = evaluate_phase_gates(phase, metrics)
+
+        assert report.overall_pass is False
+        assert len(report.near_misses) == 1
+        assert report.near_misses[0].gate.metric == "close_metric"
+
+    def test_near_misses_empty_when_all_pass(self):
+        """PhaseGateReport.near_misses is empty when all gates pass."""
+        gates = [GateConfig(metric="score", threshold=0.5, comparator="gte")]
+        phase = PhaseConfig(name="p1", description="test", gates=gates)
+        metrics = {"score": 0.8}
+        report = evaluate_phase_gates(phase, metrics)
+
+        assert report.overall_pass is True
+        assert len(report.near_misses) == 0
+
+    def test_near_misses_empty_when_all_far_fails(self):
+        """PhaseGateReport.near_misses is empty when all fails are far misses."""
+        gates = [GateConfig(metric="score", threshold=0.65, comparator="gte")]
+        phase = PhaseConfig(name="p1", description="test", gates=gates)
+        metrics = {"score": 0.1}
+        report = evaluate_phase_gates(phase, metrics)
+
+        assert report.overall_pass is False
+        assert len(report.near_misses) == 0

@@ -25,6 +25,7 @@ class GateResult:
     status: Literal["PASS", "FAIL", "SKIP", "ERROR"]
     observed_value: float | None
     message: str
+    near_miss: bool = False
 
 
 @dataclass
@@ -36,6 +37,7 @@ class PhaseGateReport:
     overall_pass: bool
     requires_human_review: bool
     failures: list[GateResult] = field(default_factory=list)
+    near_misses: list[GateResult] = field(default_factory=list)
 
 
 def evaluate_gate(gate: GateConfig, metrics: dict[str, float]) -> GateResult:
@@ -63,11 +65,23 @@ def evaluate_gate(gate: GateConfig, metrics: dict[str, float]) -> GateResult:
         f"{gate.comparator} {gate.threshold}"
     )
 
+    # Detect near misses: FAILs within 10% of threshold
+    near_miss = False
+    if status == "FAIL":
+        margin = max(abs(gate.threshold) * 0.1, 0.01)
+        if gate.comparator in ("gte", "gt"):
+            near_miss = observed >= gate.threshold - margin
+        elif gate.comparator in ("lte", "lt"):
+            near_miss = observed <= gate.threshold + margin
+        elif gate.comparator == "eq":
+            near_miss = abs(observed - gate.threshold) <= margin
+
     return GateResult(
         gate=gate,
         status=status,
         observed_value=observed,
         message=message,
+        near_miss=near_miss,
     )
 
 
@@ -80,6 +94,7 @@ def evaluate_phase_gates(
     """
     results = [evaluate_gate(gate, metrics) for gate in phase.gates]
     failures = [r for r in results if r.status == "FAIL"]
+    near_misses = [r for r in results if r.status == "FAIL" and r.near_miss]
     # A phase fails if any gate FAILed OR if all gates were SKIPped (no metrics found)
     all_skipped = len(results) > 0 and all(r.status == "SKIP" for r in results)
     overall_pass = len(failures) == 0 and not all_skipped
@@ -90,4 +105,5 @@ def evaluate_phase_gates(
         overall_pass=overall_pass,
         requires_human_review=phase.requires_human_review,
         failures=failures,
+        near_misses=near_misses,
     )

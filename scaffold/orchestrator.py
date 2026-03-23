@@ -335,6 +335,17 @@ class Orchestrator:
                         failure_lines.append(
                             f"- {r.gate.metric}: MISSING (required {r.gate.comparator} {r.gate.threshold})"
                         )
+                near_miss_lines = []
+                for r in report.results:
+                    if r.status == "FAIL" and r.near_miss:
+                        near_miss_lines.append(
+                            f"- {r.gate.metric}: observed={r.observed_value} "
+                            f"(within 10% of threshold {r.gate.threshold})"
+                        )
+                if near_miss_lines:
+                    failure_lines.append("")
+                    failure_lines.append("**Near misses** (consider minor adjustments, not major overhaul):")
+                    failure_lines.extend(near_miss_lines)
                 if failure_lines:
                     previous_failures = (
                         f"Iteration {iterations} gate failures:\n"

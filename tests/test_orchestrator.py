@@ -1096,6 +1096,51 @@ class TestAgentErrorEarlyTermination:
 # --- Inter-phase Context (Phase Summaries) ---
 
 
+class TestNearMissFeedback:
+    """Tests that near-miss gate failures appear in the retry prompt."""
+
+    def test_near_miss_in_retry_prompt(self, tmp_path):
+        """When a gate has a near-miss failure, the next iteration prompt contains near-miss guidance."""
+        exp_dir = _create_experiment(tmp_path)
+
+        # Iteration 1: near-miss failure (0.009 vs threshold 0.01 gte, margin=0.001)
+        # cross_entropy_delta_nats gte 0.01 -> 0.009 is within 10% (margin=0.001)
+        near_miss_metrics = {"cross_entropy_delta_nats": 0.009, "p_value": 0.001}
+        passing_metrics = {"cross_entropy_delta_nats": 0.5, "p_value": 0.001}
+
+        backend = _SequentialBackend(
+            metrics_sequence=[near_miss_metrics, passing_metrics]
+        )
+        runner = AgentRunner(backend=backend)
+        orch = Orchestrator(
+            experiment_dir=exp_dir,
+            runner=runner,
+            max_iterations=3,
+        )
+
+        # Write a WORKFLOW.md that renders previous_failures
+        workflow_md = exp_dir / "WORKFLOW.md"
+        workflow_md.write_text(
+            "---\nhooks: {}\n---\n\n"
+            "Phase: {{ phase }}\n"
+            "{% if previous_failures %}"
+            "PREVIOUS FAILURES:\n{{ previous_failures }}\n"
+            "{% endif %}"
+        )
+
+        result = orch.run_phase("phase1_oracle_alpha")
+
+        # Should have passed on iteration 2
+        assert result.gate_passed is True
+        assert len(backend.calls) == 2
+
+        # Second prompt should contain near-miss feedback
+        second_prompt = backend.calls[1]["prompt"]
+        assert "Near misses" in second_prompt
+        assert "minor adjustments" in second_prompt
+        assert "cross_entropy_delta_nats" in second_prompt
+
+
 class TestPhaseSummaryWritten:
     """Tests that orchestrator writes phase summary JSON after gate pass."""
 

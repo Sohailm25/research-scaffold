@@ -27,7 +27,7 @@ class ClaudeCLIRunner:
     def run(self, prompt: str) -> str:
         """Send prompt to claude CLI and return response."""
         result = subprocess.run(
-            ["claude", "--print", "-p", prompt],
+            ["claude", "--print", "--dangerously-skip-permissions", "-p", prompt],
             capture_output=True,
             text=True,
             timeout=self._timeout,
